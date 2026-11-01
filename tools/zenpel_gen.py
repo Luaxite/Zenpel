@@ -207,7 +207,9 @@ try:
 except ConfigError as e:
     sys.exit(f"error: {CONFIG_PATH.name}: {e}")
 
-INT_TYPES = {"i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64", "usize"}
+# Every integer reaches Luau as a plain `number` (a double). `i128` / `u128` too: mlua implements IntoLua / FromLua for both (`lua_convert_int!`),
+# so no conversion is written. Like `i64` / `u64` they are exact only up to 2^53 (lossy above); a value beyond the i64 range does not fit a Luau integer at all.
+INT_TYPES = {"i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize"}
 FLOAT_TYPES = {"f32", "f64"}
 MAP_TYPES = ("HashMap", "BTreeMap", "IndexMap")
 RUST_KEYWORDS = {

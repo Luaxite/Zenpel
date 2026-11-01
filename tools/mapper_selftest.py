@@ -54,6 +54,16 @@ def main():
     i, _, frm = ok(P("HashMap", P("String"), ("prim", "f64")), "param")
     assert frm.endswith("collect::<std::collections::HashMap<_, _>>()"), frm
     n += 2
+    for ty in ("i128", "u128"):
+        for role in ("param", "ret"):
+            i, to, frm = ok(("prim", ty), role)
+            assert i.rust == ty and i.luau == "number" and to == "x" and frm == "x", (ty, role, i, to, frm)
+    i, _, frm = ok(P("Vec", ("prim", "u128")), "param")
+    assert i.rust == "Vec<u128>" and i.luau == "{ number }", i
+    i, _, _ = ok(P("Option", ("prim", "i128")), "ret")
+    assert i.rust == "Option<i128>" and i.luau == "number?", i
+    skips(("prim", "f128"), "ret", "primitive `f128`")
+    n += 7
     i, to, frm = ok(("prim", "bool"), "param")
     assert i.rust == "LBool" and i.luau == "boolean" and to is None and frm == "x.0", (i, to, frm)
     i, to, frm = ok(("prim", "bool"), "ret")
