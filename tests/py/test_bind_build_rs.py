@@ -63,7 +63,7 @@ class Run(unittest.TestCase):
         (root / "rust").mkdir()
         (root / "src" / "main.luau").write_text("print('hi')\n")
         (root / "tools" / "bindgen.py").write_text("print('cargo:rerun-if-changed=stub')\n")
-        for f in ("bind_scan.py", "bind_gen.py"):
+        for f in ("bind_scan.py", "bind_gen.py", "bind_attrs.py", "bind_serde.py"):
             shutil.copy(ROOT / "tools" / f, root / "tools" / f)
         if gen_py is not None:
             (root / "tools" / "bind_gen.py").write_text(gen_py)

@@ -18,7 +18,9 @@ path = "rust/main.rs"
 # Point at the same checkout build.rs binds (bindings come from what sits in bind/: bind/azalea-src/ holding azalea/), so bindings and library can't drift apart.
 # A dependency here is only linked; it gets Luau bindings only when it lives in bind/.
 azalea = { path = "bind/azalea-src/azalea" }  # Event::Packet needs azalea's `packet-event` feature (a default one; feature `packets` below names it)
-mlua = { version = "0.12", features = ["luau", "async", "send", "macros"] }
+mlua = { version = "0.12", features = ["luau", "async", "send", "macros", "serialize"] }
+# `#[bind(serde)]` (tools/bind_serde.py): the generated glue calls mlua::LuaSerdeExt (needs mlua's `serialize`); your own types derive Serialize / Deserialize from this `serde`.
+serde = { version = "1", features = ["derive"] }
 # mlua-sys 0.13 hardcodes LBC_VERSION_MAX = 11 but accepts any luau0-src ^0.22.0; 0.22.1 (Luau 744) compiles to bytecode v13, so mlua rejects its own
 # compiled chunks ("attempt to load a text chunk (mode is 'b')") and Lua::new() panics. Luau 740 (0.22.0) emits v9. Unused here: it only constrains
 # resolution (there is no root Cargo.lock). Drop it once mlua-sys raises LBC_VERSION_MAX.

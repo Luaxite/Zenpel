@@ -198,8 +198,10 @@ class Cli(unittest.TestCase):
                     "ret": "bool",
                     "vis": True,
                     "cfgs": [],
+                    "raw": False,
+                    "serde": False,
                 },
-                {"file": "rust_binds/luau/b.rs", "line": 2, "fn": "h", "mode": "macro", "params": [], "ret": "", "vis": False, "cfgs": []},
+                {"file": "rust_binds/luau/b.rs", "line": 2, "fn": "h", "mode": "macro", "params": [], "ret": "", "vis": False, "cfgs": [], "raw": False, "serde": False},
             ],
         )
 

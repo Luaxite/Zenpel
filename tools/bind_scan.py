@@ -4,13 +4,18 @@
 Line 1 of a file may be `//BIND *Type` (`*` is a placeholder) with Type one of
 pub (every plain `pub fn`), all (every fn), macro (only fns with `#[bind]`).
 Default is macro. Output: one `path:line fn mode` line per selected fn, or with
---json a list of {file, line, fn, mode, params: [{name, ty}], ret} (ret "" = unit).
+--json a list of {file, line, fn, mode, params: [{name, ty}], ret, vis, cfgs, raw, serde} (ret "" = unit).
+`serde` is true for `#[bind(serde)]` (tools/bind_serde.py: unknown path types are copied through mlua's serde support);
+`raw` is true when the attribute also names `raw` (only so that bind_gen.py can report `raw` + `serde` as a conflict; tools/bind_attrs.py).
 """
 import argparse
 import json
 import re
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bind_attrs  # noqa: E402
 
 MODES = ("pub", "all", "macro")
 HEADER = re.compile(r"//\s*BIND\b\s*(?:\*\s*)?(\w+)?")
@@ -246,7 +251,8 @@ def scan_text(src, label):
             continue
         vis = bool(m.group("pub")) and not re.fullmatch(r"pub\s*\(\s*self\s*\)", m.group("pub").strip())
         cfgs = [a for a in attrs if re.match(r"cfg\s*\(", a)]
-        yield label, line, name, mode, params, ret, {"vis": vis, "cfgs": cfgs}
+        opts = bind_attrs.parse(attrs)
+        yield label, line, name, mode, params, ret, {"vis": vis, "cfgs": cfgs, "raw": opts["raw"], "serde": opts["serde"]}
 
 
 def scan_root(root):

@@ -115,6 +115,35 @@ and a `Runtime` has `lua()`.
 
 main (not required) runs on start once. cannot be binded.
 
+#### Your own types (`#[bind(serde)]`)
+
+A parameter or return of your own type is copied through serde when the fn says so:
+
+```rust
+use serde::{Deserialize, Serialize};
+use zenpel_bind::bind;
+
+#[derive(Serialize, Deserialize)]
+struct Config { name: String, size: u32 }
+
+#[bind(serde)]
+fn area(c: Config) -> u32 { c.size * c.size }
+
+#[bind(serde)]
+fn defaults() -> Config { Config { name: "x".into(), size: 4 } }
+```
+
+```lua
+print(area({ name = "a", size = 3 }))  -- 9
+print(defaults().name)                 -- x
+```
+
+The type needs `Serialize` (return) / `Deserialize` (parameter); it is a copy in and out, with no methods and no shared state.
+It can sit in `Option<T>` (nil is `None`), `Vec<T>` (a Luau sequence), nested (`Vec<Option<T>>`), or be the `T` of a `Result<T, E>` (Err raises a Luau error with E's text).
+`None` and `()` come back as nil; a `None` inside a returned `Vec` leaves a hole in the Luau array. A bad shape (missing field, wrong type) raises a Luau error naming the field.
+Not supported (the fn is left out, stderr `unsupported`): references (`&Config`), tuples, generics, `Option<Option<T>>`.
+This replaces hand config such as `[records]` / `[from_table]` for such types. `raw` and `serde` on one attribute is a `conflict` on stderr and the fn is left out.
+
 ## Binding other crates
 
 Crates get Luau bindings by sitting in `bind/`, nothing else: `bind/<name>/` with its own `Cargo.toml`, or a workspace checkout `bind/<name>-src/` that holds the crate `<name>/` (azalea is `bind/azalea-src/azalea`). Path crates those depend on are bound too.
