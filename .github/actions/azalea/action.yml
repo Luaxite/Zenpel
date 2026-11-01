@@ -1,5 +1,5 @@
 name: azalea
-description: Check out the azalea commit the bindings are generated and golden-tested against, into ./bind/azalea-src
+description: Check out the azalea commit the bindings are generated and golden-tested against, into ./bind/azalea-src, on the repo's pinned nightly
 runs:
     using: composite
     steps:
@@ -8,3 +8,15 @@ runs:
               repository: azalea-rs/azalea
               ref: 0d38e0dcf47eb258c41b1b09ebc2bcde7253e185
               path: bind/azalea-src
+        - name: pin azalea to the nightly of rust-toolchain.toml
+          shell: bash
+          # azalea's own rust-toolchain.toml says a floating `nightly`, and tools/bindgen_rdj.py prefers the crate workspace's file over the root's, so
+          # build.rs / bindgen.py would document azalea with the newest nightly (E0391 in azalea-chat / azalea-client). Overwrite it with the root pin.
+          run: |
+              pin=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])' 2>/dev/null || true)
+              case "$pin" in
+                  nightly-*)
+                      printf '[toolchain]\nchannel = "%s"\n' "$pin" > bind/azalea-src/rust-toolchain.toml
+                      echo "azalea pinned to $pin" ;;
+                  *) echo "no dated nightly pin in rust-toolchain.toml; azalea keeps its own" ;;
+              esac
