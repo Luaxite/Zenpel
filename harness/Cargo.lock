@@ -110,7 +110,7 @@ dependencies = [
  "azalea",
  "mlua",
  "tokio",
- "zenpel_bind",
+ "luaxite_bind",
 ]
 
 [[package]]
@@ -393,5 +393,5 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
 
 [[package]]
-name = "zenpel_bind"
+name = "luaxite_bind"
 version = "0.1.0"

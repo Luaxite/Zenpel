@@ -39,10 +39,10 @@ class Name(unittest.TestCase):
             self.assertIsNone(bind_scan.table_name(d))
 
     def test_the_name_is_read_from_line_1(self):
-        self.assertEqual(name_of("//BIND TNAME zenpel"), "zenpel")
+        self.assertEqual(name_of("//BIND TNAME luaxite"), "luaxite")
         self.assertEqual(name_of("//BIND TNAME _x9"), "_x9")
         self.assertEqual(name_of("//BIND TNAME Local"), "Local")  # keywords are case-sensitive
-        self.assertEqual(name_of("//BIND TNAME zenpel (the crate)"), "zenpel")
+        self.assertEqual(name_of("//BIND TNAME luaxite (the crate)"), "luaxite")
 
     def test_only_line_1_counts(self):
         with tree({"rust/main.rs": "fn a() {}\n//BIND TNAME late\n"}) as d:
@@ -66,23 +66,23 @@ class Name(unittest.TestCase):
             name_of("//BIND TNAME")
 
     def test_the_old_type_word_is_not_a_header_any_more(self):
-        self.assertIsNone(name_of("//BIND pub TNAME zenpel"))
-        self.assertIsNone(name_of("//BIND *all TNAME zenpel"))
+        self.assertIsNone(name_of("//BIND pub TNAME luaxite"))
+        self.assertIsNone(name_of("//BIND *all TNAME luaxite"))
 
     def test_other_bind_lines_are_ignored_with_a_warning(self):
-        for first in ("//BIND pub", "//BIND *all", "//BIND macro", "//BIND TNAME zenpel"):
+        for first in ("//BIND pub", "//BIND *all", "//BIND macro", "//BIND TNAME luaxite"):
             with self.subTest(first=first), contextlib.redirect_stderr(io.StringIO()) as err:
                 rows = list(bind_scan.scan_text(first + "\n#[bind]\nfn f() {}\n", "rust/a.rs"))
             self.assertEqual([r[2] for r in rows], ["f"])  # the fn is still selected by its attribute
             self.assertIn("warn rust/a.rs:1 `//BIND` line ignored", err.getvalue())
         with contextlib.redirect_stderr(io.StringIO()) as err:
-            list(bind_scan.scan_text("//BIND TNAME zenpel\n", "rust/main.rs"))
+            list(bind_scan.scan_text("//BIND TNAME luaxite\n", "rust/main.rs"))
         self.assertEqual(err.getvalue(), "")
 
 
 class Generated(unittest.TestCase):
     def test_rust_fns_become_fields_of_the_table(self):
-        text, err = gen({"rust/main.rs": "//BIND TNAME zenpel\n#[bind]\npub fn add(a: i64, b: i64) -> i64 { a + b }\n"})
+        text, err = gen({"rust/main.rs": "//BIND TNAME luaxite\n#[bind]\npub fn add(a: i64, b: i64) -> i64 { a + b }\n"})
         self.assertEqual(err, "")
         self.assertEqual(
             text,
@@ -91,27 +91,27 @@ class Generated(unittest.TestCase):
             "    let globals = lua.globals();\n"
             "    let tbl = lua.create_table()?;\n"
             '    tbl.set("add", lua.create_function(|_, (a0, a1): (i64, i64)| Ok(crate::add(a0, a1)))?)?;\n'
-            '    globals.set("zenpel", tbl)?;\n'
+            '    globals.set("luaxite", tbl)?;\n'
             "    Ok(())\n}\n",
         )
 
     def test_submodules_of_rust_share_the_one_table(self):
         text, _ = gen({
-            "rust/main.rs": "//BIND TNAME zenpel\nmod a;\n#[bind]\npub fn m() {}\n",
+            "rust/main.rs": "//BIND TNAME luaxite\nmod a;\n#[bind]\npub fn m() {}\n",
             "rust/a.rs": "#[bind]\n#[bind]\npub fn x() {}\n",
         })
         self.assertIn('tbl.set("m"', text)
         self.assertIn('tbl.set("x", lua.create_function(|_, ()| Ok(crate::a::x()))?)?;', text)
-        self.assertEqual(text.count('globals.set("zenpel", tbl)'), 1)
+        self.assertEqual(text.count('globals.set("luaxite", tbl)'), 1)
 
     def test_the_table_exists_without_fns(self):
-        text, _ = gen({"rust/main.rs": "//BIND TNAME zenpel\nfn private() {}\n"})
+        text, _ = gen({"rust/main.rs": "//BIND TNAME luaxite\nfn private() {}\n"})
         self.assertIn("let tbl = lua.create_table()?;", text)
-        self.assertIn('globals.set("zenpel", tbl)?;', text)
+        self.assertIn('globals.set("luaxite", tbl)?;', text)
 
     def test_glue_fns_under_rust_binds_stay_flat_globals(self):
         text, _ = gen({
-            "rust/main.rs": "//BIND TNAME zenpel\n#[bind]\npub fn mine() {}\n",
+            "rust/main.rs": "//BIND TNAME luaxite\n#[bind]\npub fn mine() {}\n",
             "rust_binds/luau/demo.rs": "#[bind]\n#[bind]\npub fn demo() {}\n",
         })
         self.assertIn('globals.set("demo"', text)
@@ -120,7 +120,7 @@ class Generated(unittest.TestCase):
 
     def test_a_name_may_repeat_across_the_table_and_the_globals(self):
         text, err = gen({
-            "rust/main.rs": "//BIND TNAME zenpel\n#[bind]\npub fn same() {}\n",
+            "rust/main.rs": "//BIND TNAME luaxite\n#[bind]\npub fn same() {}\n",
             "rust_binds/luau/x.rs": "#[bind]\n#[bind]\npub fn same() {}\n",
         })
         self.assertEqual(err, "")
@@ -129,13 +129,13 @@ class Generated(unittest.TestCase):
 
     def test_a_repeat_inside_the_table_keeps_the_first(self):
         _, err = gen({
-            "rust/main.rs": "//BIND TNAME zenpel\nmod a;\n#[bind]\npub fn same() {}\n",
+            "rust/main.rs": "//BIND TNAME luaxite\nmod a;\n#[bind]\npub fn same() {}\n",
             "rust/a.rs": "#[bind]\n#[bind]\npub fn same() {}\n",
         })
         self.assertIn("dup same", err)
 
     def test_cfg_on_a_table_fn_is_kept(self):
-        text, _ = gen({"rust/main.rs": '//BIND TNAME zenpel\n#[cfg(feature = "real")]\n#[bind]\npub fn r() {}\n'})
+        text, _ = gen({"rust/main.rs": '//BIND TNAME luaxite\n#[cfg(feature = "real")]\n#[bind]\npub fn r() {}\n'})
         self.assertIn('    #[cfg(feature = "real")]\n    {\n        tbl.set("r"', text)
 
     def test_without_tname_nothing_changes(self):
@@ -153,11 +153,11 @@ class Generated(unittest.TestCase):
 
 class Repo(unittest.TestCase):
     def test_this_crate_names_its_table_on_line_1_of_main_rs(self):
-        self.assertEqual(bind_scan.table_name(_common.ROOT), "zenpel")
-        self.assertEqual(_common.read("rust/main.rs").splitlines()[0], "//BIND TNAME zenpel")
+        self.assertEqual(bind_scan.table_name(_common.ROOT), "luaxite")
+        self.assertEqual(_common.read("rust/main.rs").splitlines()[0], "//BIND TNAME luaxite")
 
     def test_the_generated_register_installs_that_table(self):
-        self.assertIn('globals.set("zenpel", tbl)?;', bind_gen.generate(_common.ROOT))
+        self.assertIn('globals.set("luaxite", tbl)?;', bind_gen.generate(_common.ROOT))
 
 
 if __name__ == "__main__":

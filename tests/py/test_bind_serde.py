@@ -46,7 +46,7 @@ class Attrs(unittest.TestCase):
         for body, want in (
             ("bind", {"raw": False, "serde": False}),
             ("bind(serde)", {"raw": False, "serde": True}),
-            ("zenpel_bind::bind(serde)", {"raw": False, "serde": True}),
+            ("luaxite_bind::bind(serde)", {"raw": False, "serde": True}),
             ('bind("a.b", serde)', {"raw": False, "serde": True}),
             ("bind(serde,)", {"raw": False, "serde": True}),
             ("bind(raw)", {"raw": True, "serde": False}),

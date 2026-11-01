@@ -18,7 +18,7 @@ class Demo(unittest.TestCase):
     def test_every_fn_is_marked_and_the_attribute_is_imported(self):
         src = DEMO.read_text()
         self.assertFalse(src.startswith("//BIND"))  # no header: the marker selects
-        self.assertIn("use zenpel_bind::bind;", src)
+        self.assertIn("use luaxite_bind::bind;", src)
         self.assertEqual(len(re.findall(r"(?m)^#\[bind\]\npub fn ", src)), len(FNS))
 
     def test_scanner_finds_the_marked_fns(self):

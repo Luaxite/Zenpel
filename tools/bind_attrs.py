@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The options of a `#[bind(..)]` attribute that tools/bind_scan.py reads (S41: `serde`; S43: `raw`, read only so that `raw` + `serde` can be reported as a conflict).
-`#[bind]`, `#[bind(serde)]`, `#[bind(raw, serde)]` (also as `zenpel_bind::bind`): the comma-separated items are looked at one by one, in any order. Any other item (a string, `ret = ".."`, ..) is ignored, and the fn is still selected as before (this tree has no Luau names: a fn is a global of its own name).
+`#[bind]`, `#[bind(serde)]`, `#[bind(raw, serde)]` (also as `luaxite_bind::bind`): the comma-separated items are looked at one by one, in any order. Any other item (a string, `ret = ".."`, ..) is ignored, and the fn is still selected as before (this tree has no Luau names: a fn is a global of its own name).
 `raw` is not a bind mode in this tree: alone it changes nothing; with `serde` on the same attribute the fn is a `conflict` (tools/bind_gen.py).
 Pure text helper: tools/bind_scan.py (`scan_text`) calls `parse`.
 """

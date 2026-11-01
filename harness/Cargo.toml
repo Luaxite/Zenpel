@@ -11,7 +11,7 @@ mlua = { version = "0.12", features = ["luau", "async", "send", "macros"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
 anyhow = "1"
 # The shared glue (rust_binds/luau/demo_binds.rs) marks its fns `#[bind]`: this is a copy of rust_binds/bind (tools/check.sh verifies it).
-zenpel_bind = { path = "shim/zenpel_bind" }
+luaxite_bind = { path = "shim/luaxite_bind" }
 
 # The shared mod.rs mentions features `real`, `packets` (real-azalea-only glue) and `lune` (Lune's built-in modules, needs the lune-std-* crates);
 # all are root Cargo.toml features, the harness never enables them.

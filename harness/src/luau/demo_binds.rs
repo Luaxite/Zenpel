@@ -3,7 +3,7 @@
 // return: nothing, one of those, or Result<T, E: Display> (Err raises a Luau error). A first `&mlua::Lua` param is the state itself, hidden from Luau.
 // Copy this file's pattern for your own: it is the whole recipe. (`demo_*` names keep the globals clear of the API.)
 
-use zenpel_bind::bind;
+use luaxite_bind::bind;
 
 /// `demo_add(2, 3) --> 5`
 #[bind]

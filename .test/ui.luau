@@ -1,1 +1,1 @@
-return menu.new({}, { title = "Zenpel" })
+return menu.new({}, { title = "Luaxite" })

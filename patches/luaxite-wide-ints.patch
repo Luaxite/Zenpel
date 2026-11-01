@@ -19,10 +19,10 @@ index 394d866..5239895 100644
      i, to, frm = ok(("prim", "bool"), "param")
      assert i.rust == "LBool" and i.luau == "boolean" and to is None and frm == "x.0", (i, to, frm)
      i, to, frm = ok(("prim", "bool"), "ret")
-diff --git a/tools/zenpel_gen.py b/tools/zenpel_gen.py
+diff --git a/tools/luaxite_gen.py b/tools/luaxite_gen.py
 index de950df..ce3bbe1 100644
---- a/tools/zenpel_gen.py
-+++ b/tools/zenpel_gen.py
+--- a/tools/luaxite_gen.py
++++ b/tools/luaxite_gen.py
 @@ -207,7 +207,9 @@ try:
  except ConfigError as e:
      sys.exit(f"error: {CONFIG_PATH.name}: {e}")

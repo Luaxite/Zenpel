@@ -185,7 +185,7 @@ impl Menu {
         self.0.stop.store(false, Ordering::SeqCst);
         self.0.open.store(true, Ordering::SeqCst);
         let shared = self.0.clone();
-        let spawned = std::thread::Builder::new().name("zenpel-menu".into()).spawn(move || {
+        let spawned = std::thread::Builder::new().name("luaxite-menu".into()).spawn(move || {
             if let Err(e) = run_terminal(&shared) {
                 shared.log(format!("menu stopped: {e}"));
             }
