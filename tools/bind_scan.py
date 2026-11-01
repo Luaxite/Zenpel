@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""List Rust fns under rust/ and rust_binds/ that are selected for Luau binding.
+"""List Rust fns under rust/ and rust_binds/ that are marked `#[bind]` for Luau binding.
 
-Line 1 of a file may be `//BIND *Type` (`*` is a placeholder) with Type one of
-pub (every plain `pub fn`), all (every fn), macro (only fns with `#[bind]`).
-Default is macro. Output: one `path:line fn mode` line per selected fn, or with
---json a list of {file, line, fn, mode, params: [{name, ty}], ret, vis, cfgs, raw, serde} (ret "" = unit).
+There are no per-file modes: a fn is bound when it carries `#[bind]` (or `#[bind(serde)]`, see tools/bind_attrs.py). The only `//BIND` line is
+line 1 of rust/main.rs, `//BIND TNAME name`, which names the global table the fns under rust/ go into (table_name()). Any other `//BIND` line is
+ignored with a `warn` on stderr (the old `//BIND pub|all|macro` modes are gone). Output: one `path:line fn` line per selected fn, or with
+--json a list of {file, line, fn, params: [{name, ty}], ret, vis, cfgs, raw, serde} (ret "" = unit).
 `serde` is true for `#[bind(serde)]` (tools/bind_serde.py: unknown path types are copied through mlua's serde support);
 `raw` is true when the attribute also names `raw` (only so that bind_gen.py can report `raw` + `serde` as a conflict; tools/bind_attrs.py).
 """
@@ -17,8 +17,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bind_attrs  # noqa: E402
 
-MODES = ("pub", "all", "macro")
-HEADER = re.compile(r"//\s*BIND\b\s*(?:\*\s*)?(\w+)?")
+HEADER = re.compile(r"//\s*BIND\b")
+TNAME = re.compile(r"//\s*BIND\s+TNAME\b(?:\s+(\S+))?")
+# Luau's reserved words: a table cannot be named by one (`local`, `end`, ... would not parse as a global's name).
+RESERVED = (
+    "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "if", "in",
+    "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
+)
+NAME = re.compile(r"^(?!(?:" + "|".join(RESERVED) + r")$)[A-Za-z_][A-Za-z0-9_]*$")
 # String/char literals: blanked like comments so braces and `fn` inside stay inert.
 LITERAL = re.compile(
     r'b?r(#*)".*?"\1'
@@ -178,18 +184,14 @@ def attrs_before(text, pos, orig=None):
     return attrs
 
 
-def file_mode(src, label):
+def header_warning(src, label):
+    """A `//BIND` line 1 that is not rust/main.rs's `//BIND TNAME name` selects nothing any more: say so (stderr line or None)."""
     first = src.lstrip("\ufeff").split("\n", 1)[0]
-    m = HEADER.match(first)
-    if not m:
-        return "macro"
-    word = m.group(1)
-    if word is None:
-        return "macro"
-    if word not in MODES:
-        print(f"warn {label}:1 unknown BIND mode {word!r}, using macro", file=sys.stderr)
-        return "macro"
-    return word
+    if not HEADER.match(first):
+        return None
+    if label == "rust/main.rs" and TNAME.match(first):
+        return None
+    return f"warn {label}:1 `//BIND` line ignored: files have no modes (mark fns `#[bind]`); only rust/main.rs line 1 may be `//BIND TNAME name`"
 
 
 def brace_kind(text, pos, bodies):
@@ -233,16 +235,16 @@ def skip_reason(attrs, kinds, mods, generic, params):
 
 
 def scan_text(src, label):
-    mode = file_mode(src, label)
+    warning = header_warning(src, label)
+    if warning:
+        print(warning, file=sys.stderr)
     text = mask(src)
     found = [(m, *signature(text, m.end())) for m in FN.finditer(text)]
     bodies = {body for _m, _p, _r, body, _g in found if body >= 0}
     kinds = enclosing(text, [m.start() for m, *_ in found], bodies)
     for m, params, ret, _body, generic in found:
-        is_pub = bool(m.group("pub")) and "(" not in m.group("pub")
         attrs = attrs_before(text, m.start(), src)
-        marked = any(BIND_ATTR.fullmatch(a) for a in attrs)
-        if not (mode == "all" or (mode == "pub" and is_pub) or (mode == "macro" and marked)):
+        if not any(BIND_ATTR.fullmatch(a) for a in attrs):
             continue
         line, name = text.count("\n", 0, m.start()) + 1, m.group("name")
         why = skip_reason(attrs, kinds[m.start()], m.group("mods"), generic, params)
@@ -252,7 +254,28 @@ def scan_text(src, label):
         vis = bool(m.group("pub")) and not re.fullmatch(r"pub\s*\(\s*self\s*\)", m.group("pub").strip())
         cfgs = [a for a in attrs if re.match(r"cfg\s*\(", a)]
         opts = bind_attrs.parse(attrs)
-        yield label, line, name, mode, params, ret, {"vis": vis, "cfgs": cfgs, "raw": opts["raw"], "serde": opts["serde"]}
+        yield label, line, name, params, ret, {"vis": vis, "cfgs": cfgs, "raw": opts["raw"], "serde": opts["serde"]}
+
+
+def table_name(root):
+    """The global table name from line 1 of rust/main.rs (`//BIND TNAME name`), or None when there is no TNAME.
+
+    Raises ValueError for a missing or invalid name: it must match NAME (`^(?!RESERVED$)[A-Za-z_][A-Za-z0-9_]*$`, RESERVED = Luau keywords).
+    """
+    path = Path(root) / "rust" / "main.rs"
+    if not path.is_file():
+        return None
+    first = path.read_text(errors="replace").lstrip("\ufeff").split("\n", 1)[0]
+    m = TNAME.match(first)
+    if not m:
+        return None
+    name = m.group(1)
+    if name is None:
+        raise ValueError("rust/main.rs:1 TNAME needs a name")
+    if not NAME.match(name):
+        why = "a Luau keyword" if name in RESERVED else f"not a valid name ({NAME.pattern})"
+        raise ValueError(f"rust/main.rs:1 TNAME {name!r} is {why}")
+    return name
 
 
 def scan_root(root):
@@ -272,11 +295,11 @@ def main():
     args = ap.parse_args()
     found = list(scan_root(args.root))
     if args.json:
-        keys = ("file", "line", "fn", "mode", "params", "ret")
-        print(json.dumps([{**dict(zip(keys, f)), **f[6]} for f in found], indent=2))
+        keys = ("file", "line", "fn", "params", "ret")
+        print(json.dumps([{**dict(zip(keys, f)), **f[5]} for f in found], indent=2))
         return
-    for label, line, name, mode, *_ in found:
-        print(f"{label}:{line} {name} {mode}")
+    for label, line, name, *_ in found:
+        print(f"{label}:{line} {name}")
 
 
 if __name__ == "__main__":

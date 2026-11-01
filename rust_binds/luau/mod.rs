@@ -1,5 +1,5 @@
 mod convert;
-// Sample `//BIND pub` file (see its header); its fns are Luau globals through the generated `binds::register`.
+// Sample `#[bind]` file (see its header); its fns are Luau globals through the generated `binds::register`.
 #[allow(dead_code)]
 mod demo_binds;
 mod extra_block;

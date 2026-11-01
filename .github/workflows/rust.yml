@@ -53,6 +53,9 @@ jobs:
               run: |
                   # azalea uses nightly-only features, so document and build with the nightly its rust-toolchain.toml names
                   ch=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["toolchain"]["channel"])' bind/azalea-src/rust-toolchain.toml 2>/dev/null || true)
+                  # a dated nightly pinned in the root rust-toolchain.toml (`nightly-YYYY-MM-DD`) wins over azalea's floating one
+                  pin=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])' 2>/dev/null || true)
+                  case "$pin" in nightly-*) ch=$pin ;; esac
                   ch=${ch:-nightly}
                   echo "azalea toolchain: $ch"
                   rustup toolchain install "$ch" --profile minimal --no-self-update
@@ -131,6 +134,9 @@ jobs:
               run: |
                   # same toolchain choice as `real`: the one bind/azalea-src/rust-toolchain.toml names, not a separately floating nightly
                   ch=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["toolchain"]["channel"])' bind/azalea-src/rust-toolchain.toml 2>/dev/null || true)
+                  # a dated nightly pinned in the root rust-toolchain.toml (`nightly-YYYY-MM-DD`) wins over azalea's floating one
+                  pin=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])' 2>/dev/null || true)
+                  case "$pin" in nightly-*) ch=$pin ;; esac
                   ch=${ch:-nightly}
                   echo "azalea toolchain: $ch"
                   rustup toolchain install "$ch" --profile minimal --no-self-update
@@ -158,6 +164,9 @@ jobs:
             - name: azalea toolchain
               run: |
                   ch=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["toolchain"]["channel"])' bind/azalea-src/rust-toolchain.toml 2>/dev/null || true)
+                  # a dated nightly pinned in the root rust-toolchain.toml (`nightly-YYYY-MM-DD`) wins over azalea's floating one
+                  pin=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])' 2>/dev/null || true)
+                  case "$pin" in nightly-*) ch=$pin ;; esac
                   ch=${ch:-nightly}
                   echo "azalea toolchain: $ch"
                   rustup toolchain install "$ch" --profile minimal --no-self-update

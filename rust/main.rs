@@ -1,3 +1,4 @@
+//BIND TNAME zenpel
 #[path = "../rust_binds/luau/mod.rs"]
 mod luau;
 

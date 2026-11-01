@@ -97,17 +97,27 @@ pub fn Name() {
 }
 ```
 
-### Flags
+### The crate's global table
 
-To set bindings config place a comment in
-**line 1** of a file,
-`//BIND *Type`
+Everything bound under `rust/` is a field of one global table, like `azalea`. Its name comes from the **top comment (line 1)**
+of `rust/main.rs`:
 
-#### Types
+`//BIND TNAME name`
 
-all - All the top level functions.
-pub - Only public functions
-macro - Only macro (`#[bind]`)
+```rust
+//BIND TNAME zenpel
+use zenpel_bind::bind;
+
+#[bind]
+pub fn add(a: i64, b: i64) -> i64 { a + b }   // Luau: zenpel.add(2, 3)
+```
+
+`name` must match `^(?!RESERVED$)[A-Za-z_][A-Za-z0-9_]*$`, RESERVED being the Luau keywords
+(`and break do else elseif end false for function if in local nil not or repeat return then true until while`);
+anything else stops `tools/bind_gen.py` with `error: rust/main.rs:1 TNAME ..` and nothing is bound.
+Without `TNAME` the fns are flat globals.
+
+There are no per-file types (`//BIND pub|all|macro` is gone): a fn is bound when it is marked `#[bind]`. Any other `//BIND` line is ignored with a warning.
 
 To use the mlua instance itself, take `&mlua::Lua` as the first parameter (Luau does not see it);
 other Rust code can call `luau::current_lua()`,

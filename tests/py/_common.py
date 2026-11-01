@@ -65,3 +65,12 @@ def d_luau_functions(text: str):
 def lua_strings_called(text: str):
     """Names of methods/functions a Luau script calls: `x:name(` and `x.name(`."""
     return set(re.findall(r"[:.]([A-Za-z_][A-Za-z0-9_]*)\s*[({\"']", text))
+
+
+def mark(src):
+    """`src` with `#[bind]` in front of every fn (inline, so the line numbers stay): fixtures say what they test, not how they are selected."""
+    import bind_scan
+
+    for i in reversed([m.start() for m in bind_scan.FN.finditer(bind_scan.mask(src))]):
+        src = src[:i] + "#[bind] " + src[i:]
+    return src

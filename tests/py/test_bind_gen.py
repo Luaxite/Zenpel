@@ -37,7 +37,7 @@ class Text(unittest.TestCase):
         self.assertEqual(gen({"main.rs": "fn plain() {}\n"})[0], EMPTY)
 
     def test_arities(self):
-        src = "//BIND all\nfn z() {}\nfn one(a: u8) -> bool { true }\nfn two(a: i64, b: String) -> String { b }\nfn three(a: f32, b: f64, c: usize) {}\n"
+        src = _common.mark("\nfn z() {}\nfn one(a: u8) -> bool { true }\nfn two(a: i64, b: String) -> String { b }\nfn three(a: f32, b: f64, c: usize) {}\n")
         text, err = gen({"main.rs": src})
         self.assertEqual(err, "")
         self.assertEqual(
@@ -78,7 +78,7 @@ class Text(unittest.TestCase):
             self.assertIn('"f"', text)
 
     def test_unsupported_types_are_left_out_with_a_warning(self):
-        src = "//BIND all\nfn ok() {}\nfn p(v: Vec<u8>) {}\nfn r() -> Option<i32> { None }\nfn s(a: &str) {}\n"
+        src = _common.mark("\nfn ok() {}\nfn p(v: Vec<u8>) {}\nfn r() -> Option<i32> { None }\nfn s(a: &str) {}\n")
         text, err = gen({"main.rs": src})
         self.assertIn('"ok"', text)
         for fn in ('"p"', '"r"', '"s"'):
@@ -95,11 +95,11 @@ class Text(unittest.TestCase):
         self.assertEqual(err, "dup f (rust/b.rs:2)\n")
 
     def test_skipped_by_the_scanner_stay_out(self):
-        text, _ = gen({"main.rs": "//BIND all\nasync fn a() {}\nfn g<T>() {}\nfn h(&self) {}\n"})
+        text, _ = gen({"main.rs": _common.mark("\nasync fn a() {}\nfn g<T>() {}\nfn h(&self) {}\n")})
         self.assertEqual(text, EMPTY)
 
     def test_private_fn_of_another_file_is_invisible(self):
-        text, err = gen({"luau/x.rs": "//BIND all\nfn a() {}\npub fn b() {}\n", "luau/mod.rs": "#[bind]\nfn m() {}\n", "main.rs": "#[bind]\nfn r() {}\n"})
+        text, err = gen({"luau/x.rs": _common.mark("\nfn a() {}\npub fn b() {}\n"), "luau/mod.rs": "#[bind]\nfn m() {}\n", "main.rs": "#[bind]\nfn r() {}\n"})
         self.assertEqual(err, "invisible rust_binds/luau/x.rs:2 a\n")
         for want in ("crate::luau::x::b()", "crate::luau::m()", "crate::r()"):
             self.assertIn(want, text)
@@ -109,8 +109,8 @@ class Text(unittest.TestCase):
         files = {
             "main.rs": "mod luau;\n",
             "luau/mod.rs": '#[cfg(feature = "real")]\nmod real_x;\nmod plain;\n',
-            "luau/real_x.rs": '//BIND pub\npub fn a() {}\n#[cfg(feature = "z")]\npub fn b() {}\n',
-            "luau/plain.rs": "//BIND pub\npub fn c() {}\n",
+            "luau/real_x.rs": _common.mark('\npub fn a() {}\n#[cfg(feature = "z")]\npub fn b() {}\n'),
+            "luau/plain.rs": _common.mark("\npub fn c() {}\n"),
         }
         text, err = gen(files)
         self.assertEqual(err, "")
@@ -123,13 +123,13 @@ class Text(unittest.TestCase):
         files = {
             "main.rs": '#[cfg(feature = "lune")]\nmod a;\n',
             "a/mod.rs": '#[cfg(unix)]\nmod b;\n',
-            "a/b.rs": "//BIND pub\npub fn f() {}\n",
+            "a/b.rs": _common.mark("\npub fn f() {}\n"),
         }
         text, _ = gen(files)
         self.assertIn('#[cfg(feature = "lune")]\n    #[cfg(unix)]\n    {\n', text)
 
     def test_the_bind_crate_is_not_bound(self):
-        text, _ = gen({"bind/src/lib.rs": "//BIND all\npub fn bind() {}\n"})
+        text, _ = gen({"bind/src/lib.rs": _common.mark("\npub fn bind() {}\n")})
         self.assertEqual(text, EMPTY)
 
 
@@ -211,7 +211,7 @@ class Cli(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("rustfmt"), "no rustfmt")
     def test_output_is_valid_rust_syntax(self):
-        src = "//BIND all\nfn z() {}\nfn t(a: i8, b: String) -> String { b }\nfn r(l: &Lua, a: Option<u8>) -> Result<(), String> { Ok(()) }\n"
+        src = _common.mark("\nfn z() {}\nfn t(a: i8, b: String) -> String { b }\nfn r(l: &Lua, a: Option<u8>) -> Result<(), String> { Ok(()) }\n")
         text, _ = gen({"main.rs": src, "luau/mod.rs": "#[bind]\nfn q(a: bool) {}\n"})
         env = {**os.environ, "RUSTUP_TOOLCHAIN": os.environ.get("RUSTUP_TOOLCHAIN", "stable")}
         p = _common.run(["rustfmt", "--edition", "2024", "--emit", "stdout"], input=text, env=env)

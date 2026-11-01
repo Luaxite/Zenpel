@@ -2,6 +2,9 @@
 """Generate the Rust that binds the fns selected by tools/bind_scan.py to a Luau state.
 
 Output: `pub fn register(lua: &mlua::Lua) -> mlua::Result<()>`; every bound fn becomes a Luau global of the same name.
+With `//BIND TNAME name` on line 1 of rust/main.rs the fns under rust/ are fields of one global table instead: `name.fn(..)`, the way
+`azalea.join(..)` is (name: `^(?!RESERVED$)[A-Za-z_][A-Za-z0-9_]*$`, RESERVED = Luau keywords; tools/bind_scan.py table_name). The table exists even when
+it has no fns. Fns under rust_binds/ (the glue's sample) stay flat globals.
 Argument types: i8..i64, u8..u64, isize, usize, f32, f64, bool, String, or Option<one of those> (nil is None).
 A first parameter `&Lua` / `&mlua::Lua` is passed the state and is not a Luau argument.
 Return: nothing, `()`, or one of those; or `Result<T, E>` / `anyhow::Result<T>` / `mlua::Result<T>` with T like that (Err raises a Luau error with E's text).
@@ -84,8 +87,8 @@ def mod_cfgs(root, label):
     return out
 
 
-def statement(fn, path, args, inject=False, is_result=False, cfgs=(), serde=False, ret=""):
-    """One `globals.set(..)` line for a fn with supported types (`serde` + `ret`: unknown path types, also in Option / Vec and as the `T` of a Result, go through `from_value` / `to_value`, see tools/bind_serde.py)."""
+def statement(fn, path, args, inject=False, is_result=False, cfgs=(), serde=False, ret="", target="globals"):
+    """One `<target>.set(..)` line (`globals`, or the crate table `tbl`) for a fn with supported types (`serde` + `ret`: unknown path types, also in Option / Vec and as the `T` of a Result, go through `from_value` / `to_value`, see tools/bind_serde.py)."""
     names = [f"a{i}" for i in range(len(args))]
     spell = (lambda ty: bind_serde.arg_type(ty, arg_ok) or ty) if serde else (lambda ty: ty)  # a serde argument arrives as an mlua::Value
     if not args:
@@ -103,36 +106,45 @@ def statement(fn, path, args, inject=False, is_result=False, cfgs=(), serde=Fals
         pre += more
     named = "lua" if inject or pre else "_"
     func = f"{{ {pre}{result} }}" if pre else result
-    line = f'globals.set("{fn}", lua.create_function(|{named}, {pat}| {func})?)?;'
+    line = f'{target}.set("{fn}", lua.create_function(|{named}, {pat}| {func})?)?;'
     if cfgs:  # a block: attributes on a plain statement are fine, on the `?` expression inside it they are not
         return "".join(f"    #[{c}]\n" for c in cfgs) + f"    {{\n        {line}\n    }}\n"
     return f"    {line}\n"
 
 
 def generate(root):
-    """Rust source text for every supported fn under root/rust and root/rust_binds."""
-    body, seen = [], set()
-    for label, line, fn, _mode, params, ret, extra in bind_scan.scan_root(root):
+    """Rust source text for every supported fn under root/rust and root/rust_binds.
+
+    Raises ValueError for an invalid `TNAME` (see bind_scan.table_name)."""
+    tname = bind_scan.table_name(root)
+    flat, table, seen = [], [], set()
+    for label, line, fn, params, ret, extra in bind_scan.scan_root(root):
         if label.startswith("rust_binds/bind/"):
             continue
         if extra["raw"] and extra["serde"]:  # two ways to convert the same types
             print(f"conflict {label}:{line} {fn} raw+serde", file=sys.stderr)
             continue
         inject, args, is_result, bad = split_sig(params, ret, extra["serde"])
+        in_table = tname is not None and label.startswith("rust/")
+        key = (tname if in_table else None, fn)
         if not visible(module_path(label), extra["vis"]):
             print(f"invisible {label}:{line} {fn}", file=sys.stderr)
         elif bad is not None:
             print(f"unsupported {label}:{line} {fn} {bad}", file=sys.stderr)
-        elif fn in seen:
+        elif key in seen:
             print(f"dup {fn} ({label}:{line})", file=sys.stderr)
         else:
-            seen.add(fn)
+            seen.add(key)
             cfgs = mod_cfgs(root, label) + extra["cfgs"]
-            body.append(statement(fn, module_path(label), args, inject, is_result, cfgs, extra["serde"], ret))
+            target = "tbl" if in_table else "globals"
+            (table if in_table else flat).append(statement(fn, module_path(label), args, inject, is_result, cfgs, extra["serde"], ret, target))
     head = "pub fn register(lua: &mlua::Lua) -> mlua::Result<()> {\n"
-    if not body:
+    if not flat and not table and tname is None:
         return HEAD + head + "    let _ = lua;\n    Ok(())\n}\n"
-    return HEAD + head + "    let globals = lua.globals();\n" + "".join(body) + "    Ok(())\n}\n"
+    body = head + "    let globals = lua.globals();\n" + "".join(flat)
+    if tname is not None:
+        body += "    let tbl = lua.create_table()?;\n" + "".join(table) + f'    globals.set("{tname}", tbl)?;\n'
+    return HEAD + body + "    Ok(())\n}\n"
 
 
 def main():
@@ -140,7 +152,11 @@ def main():
     ap.add_argument("--root", default=".")
     ap.add_argument("--out", help="write here instead of stdout")
     args = ap.parse_args()
-    text = generate(args.root)
+    try:
+        text = generate(args.root)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
     if args.out:
         Path(args.out).write_text(text)
     else:

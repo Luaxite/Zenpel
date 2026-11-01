@@ -1,5 +1,6 @@
 [toolchain]
-# Floating on purpose until a date is verified: azalea (the commit in .github/actions/azalea) pins plain `nightly` itself, and a dated nightly that
-# does not build azalea would break every job. CI prints the exact nightly it used (`rustc -V` in the "azalea toolchain" steps of rust.yml): once a
-# green run shows e.g. `nightly-2026-10-20`, put that here (and keep AZL_RDJ_FORMAT_RANGE covering its rustdoc JSON format_version).
-channel = "nightly"
+# Pinned to the nightly of the last green CI run (`rustc 1.101.0-nightly (92b5b8c87 2026-10-29)`, rustup channel date 2026-10-30). A newer nightly broke
+# azalea-chat / azalea-client with `E0391: cycle detected when computing when ... needs async drop`. The CI "azalea toolchain" steps use a dated channel
+# here instead of azalea's floating `nightly` (see .github/workflows/rust.yml). To move the pin: set another `nightly-YYYY-MM-DD` once a green run shows it
+# (keep AZL_RDJ_FORMAT_RANGE covering its rustdoc JSON format_version).
+channel = "nightly-2026-10-30"

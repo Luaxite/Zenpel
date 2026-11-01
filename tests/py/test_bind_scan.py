@@ -11,7 +11,7 @@ import bind_scan
 
 
 def scan(src, label="rust/t.rs"):
-    """(rows, stderr) for one source text; rows = (fn, mode)."""
+    """(rows, stderr) for one source text; rows = (label, line, fn, params, ret, extra)."""
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
         rows = list(bind_scan.scan_text(src, label))
@@ -22,28 +22,30 @@ def names(src):
     return [r[2] for r in scan(src)[0]]
 
 
-class Modes(unittest.TestCase):
+def scan_all(src):
+    return scan(_common.mark(src))
+
+
+class Selection(unittest.TestCase):
     SRC = "pub fn a() {}\nfn b() {}\npub(crate) fn c() {}\n#[bind]\nfn d() {}\n"
 
-    def test_default_is_macro(self):
+    def test_only_marked_fns_are_selected(self):
         self.assertEqual(names(self.SRC), ["d"])
 
-    def test_header_modes(self):
-        self.assertEqual(names("//BIND *macro\n" + self.SRC), ["d"])
-        self.assertEqual(names("//BIND *all\n" + self.SRC), ["a", "b", "c", "d"])
-        self.assertEqual(names("//BIND *pub\n" + self.SRC), ["a"])  # pub(crate) is not public
+    def test_a_header_selects_nothing(self):
+        # the old `//BIND pub|all|macro` modes are gone: the line is ignored (with a warning), the marker still decides
+        for first in ("//BIND *macro", "//BIND *all", "//BIND *pub", "//BIND pub", "//BIND all", "//BIND *bogus", "\ufeff//BIND *pub"):
+            with self.subTest(first=first):
+                rows, err = scan(first + "\n" + self.SRC)
+                self.assertEqual([r[2] for r in rows], ["d"])
+                self.assertIn("warn rust/t.rs:1 `//BIND` line ignored", err)
 
-    def test_header_without_placeholder_and_bom(self):
-        self.assertEqual(names("//BIND pub\n" + self.SRC), ["a"])
-        self.assertEqual(names("﻿//BIND *pub\n" + self.SRC), ["a"])
+    def test_tname_is_only_for_rust_main_rs(self):
+        self.assertEqual(scan("//BIND TNAME x\n" + self.SRC, "rust/main.rs")[1], "")
+        self.assertIn("ignored", scan("//BIND TNAME x\n" + self.SRC, "rust/t.rs")[1])
 
-    def test_unknown_mode_warns_and_uses_macro(self):
-        rows, err = scan("//BIND *bogus\n" + self.SRC)
-        self.assertEqual([r[2] for r in rows], ["d"])
-        self.assertIn("unknown BIND mode", err)
-
-    def test_header_only_on_line_one(self):
-        self.assertEqual(names("\n//BIND *all\n" + self.SRC), ["d"])
+    def test_only_line_one_is_a_header(self):
+        self.assertEqual(scan("\n//BIND *all\n" + self.SRC)[1], "")  # not line 1: not even a warning
 
     def test_attr_forms(self):
         src = "#[bind]\nfn a() {}\n#[zenpel_bind::bind]\nfn b() {}\n#[bind(name = \"x\")]\nfn c() {}\n#[bindx]\nfn d() {}\n"
@@ -53,18 +55,18 @@ class Modes(unittest.TestCase):
         self.assertEqual(names("#[inline]\n#[bind]\n#[allow(dead_code)]\npub fn a() {}\n"), ["a"])
 
     def test_comments_and_strings_are_inert(self):
-        src = '//BIND *all\n// fn c() {}\n/* fn d() {} */\nfn a() { let s = "fn e() {"; }\nfn b() {}\n'
-        self.assertEqual(names(src), ["a", "b"])
+        src = '\n// fn c() {}\n/* fn d() {} */\nfn a() { let s = "fn e() {"; }\nfn b() {}\n'
+        self.assertEqual([r[2] for r in scan_all(src)[0]], ["a", "b"])
 
     def test_line_numbers(self):
-        rows, _ = scan("//BIND all\n\n/* x\n y */\nfn a() {}\n")
+        rows, _ = scan_all("\n\n/* x\n y */\nfn a() {}\n")
         self.assertEqual([r[1] for r in rows], [5])
 
 
 class Signatures(unittest.TestCase):
     def sig(self, decl):
-        (row,), _ = scan("//BIND all\n" + decl + " {}\n")
-        return row[4], row[5]
+        (row,), _ = scan_all("\n" + decl + " {}\n")
+        return row[3], row[4]
 
     def test_smoke_case(self):
         params, ret = self.sig("fn f(a: Vec<(i32, u8)>, cb: fn(i32) -> i32) -> Result<(), String>")
@@ -101,7 +103,7 @@ class Signatures(unittest.TestCase):
 
 class Skips(unittest.TestCase):
     def check(self, body, reason, fn="x"):
-        rows, err = scan("//BIND all\n" + body)
+        rows, err = scan_all("\n" + body)
         self.assertNotIn(fn, [r[2] for r in rows])
         self.assertIn(f" {fn} {reason}\n", err)
 
@@ -112,7 +114,7 @@ class Skips(unittest.TestCase):
         self.check("fn x<'a>(a: &'a str) {}\n", "generic")
 
     def test_self(self):
-        rows, err = scan("//BIND all\nimpl S {\n    fn x(&self) {}\n    fn y(a: u8) {}\n}\n")
+        rows, err = scan_all("\nimpl S {\n    fn x(&self) {}\n    fn y(a: u8) {}\n}\n")
         self.assertEqual(rows, [])
         self.assertEqual(err, "skip rust/t.rs:3 x self\nskip rust/t.rs:4 y inner\n")
 
@@ -121,31 +123,31 @@ class Skips(unittest.TestCase):
         self.check("pub async unsafe fn x() {}\n", "async")
 
     def test_cfg_test_module(self):
-        rows, err = scan("//BIND all\nfn keep() {}\n#[cfg(test)]\nmod tests {\n    fn x() {}\n}\nfn after() {}\n")
+        rows, err = scan_all("\nfn keep() {}\n#[cfg(test)]\nmod tests {\n    fn x() {}\n}\nfn after() {}\n")
         self.assertEqual([r[2] for r in rows], ["keep", "after"])
         self.assertIn("skip rust/t.rs:5 x cfg_test\n", err)
 
     def test_cfg_test_and_test_attr_on_fn(self):
-        rows, err = scan("//BIND all\n#[cfg(test)]\nfn x() {}\n#[test]\nfn y() {}\n")
+        rows, err = scan_all("\n#[cfg(test)]\nfn x() {}\n#[test]\nfn y() {}\n")
         self.assertEqual(rows, [])
         self.assertEqual(err, "skip rust/t.rs:3 x cfg_test\nskip rust/t.rs:5 y cfg_test\n")
 
     def test_nested(self):
-        rows, err = scan("//BIND all\nfn outer() {\n    fn x() {}\n    if true { fn z() {} }\n}\nfn y() {}\n")
+        rows, err = scan_all("\nfn outer() {\n    fn x() {}\n    if true { fn z() {} }\n}\nfn y() {}\n")
         self.assertEqual([r[2] for r in rows], ["outer", "y"])
         self.assertIn("skip rust/t.rs:3 x nested\n", err)
         self.assertIn("skip rust/t.rs:4 z nested\n", err)
 
     def test_impl_mod_and_trait_bodies_are_inner(self):
         # `crate::<file module>::name` does not name a fn inside them
-        rows, err = scan("//BIND all\nmod m {\n    pub fn a() {}\n    impl S { pub fn b() {} }\n}\ntrait T { fn c() {} fn d(); }\nfn top() {}\n")
+        rows, err = scan_all("\nmod m {\n    pub fn a() {}\n    impl S { pub fn b() {} }\n}\ntrait T { fn c() {} fn d(); }\nfn top() {}\n")
         self.assertEqual([r[2] for r in rows], ["top"])
         for n, f in ((3, "a"), (4, "b"), (6, "c"), (6, "d")):
             self.assertIn(f"skip rust/t.rs:{n} {f} inner\n", err)
 
     def test_extras_vis_and_cfgs(self):
-        src = '//BIND all\npub fn a() {}\npub(crate) fn b() {}\npub(self) fn c() {}\nfn d() {}\n#[cfg(feature = "x")]\n#[inline]\nfn e() {}\n'
-        got = {r[2]: r[6] for r in bind_scan.scan_text(src, "rust/t.rs")}
+        src = '\npub fn a() {}\npub(crate) fn b() {}\npub(self) fn c() {}\nfn d() {}\n#[cfg(feature = "x")]\n#[inline]\nfn e() {}\n'
+        got = {r[2]: r[5] for r in bind_scan.scan_text(_common.mark(src), "rust/t.rs")}
         self.assertEqual([got[k]["vis"] for k in "abcde"], [True, True, False, False, False])
         self.assertEqual(got["e"]["cfgs"], ['cfg(feature = "x")'])
         self.assertEqual(got["a"]["cfgs"], [])
@@ -156,7 +158,7 @@ class Skips(unittest.TestCase):
         self.assertEqual(err, "skip rust/t.rs:3 marked generic\n")
 
     def test_fn_pointer_type_is_not_a_fn(self):
-        self.assertEqual(names("//BIND all\nfn a(cb: fn(i32) -> i32, g: Fn(u8)) {}\n"), ["a"])
+        self.assertEqual([r[2] for r in scan_all("\nfn a(cb: fn(i32) -> i32, g: Fn(u8)) {}\n")[0]], ["a"])
 
 
 class Cli(unittest.TestCase):
@@ -165,22 +167,22 @@ class Cli(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         rs = Path(self.tmp.name) / "rust_binds" / "luau"
         rs.mkdir(parents=True)
-        (rs / "a.rs").write_text("//BIND *pub\npub fn f(a: i32, s: String) -> bool { true }\npub fn g<T>() {}\n")
+        (rs / "a.rs").write_text("#[bind]\npub fn f(a: i32, s: String) -> bool { true }\n#[bind]\npub fn g<T>() {}\n")
         (rs / "b.rs").write_text("#[bind]\nfn h() {}\nfn ignored() {}\n")
         tgt = Path(self.tmp.name) / "rust" / "target"
         tgt.mkdir(parents=True)
-        (tgt / "c.rs").write_text("//BIND all\nfn nope() {}\n")
+        (tgt / "c.rs").write_text("#[bind]\nfn nope() {}\n")
 
     def test_text_output_and_skip_stderr(self):
         p = _common.run(["python3", _common.TOOLS / "bind_scan.py", "--root", self.tmp.name])
         self.assertEqual(p.returncode, 0)
-        self.assertEqual(p.stdout.splitlines(), ["rust_binds/luau/a.rs:2 f pub", "rust_binds/luau/b.rs:2 h macro"])
-        self.assertEqual(p.stderr, "skip rust_binds/luau/a.rs:3 g generic\n")
+        self.assertEqual(p.stdout.splitlines(), ["rust_binds/luau/a.rs:2 f", "rust_binds/luau/b.rs:2 h"])
+        self.assertEqual(p.stderr, "skip rust_binds/luau/a.rs:4 g generic\n")
 
     def test_user_code_in_rust_is_scanned_before_the_glue(self):
         (Path(self.tmp.name) / "rust" / "main.rs").write_text("#[bind]\nfn mine() {}\n")
         p = _common.run(["python3", _common.TOOLS / "bind_scan.py", "--root", self.tmp.name])
-        self.assertEqual(p.stdout.splitlines()[0], "rust/main.rs:2 mine macro")
+        self.assertEqual(p.stdout.splitlines()[0], "rust/main.rs:2 mine")
         self.assertEqual(len(p.stdout.splitlines()), 3)
 
     def test_json_output(self):
@@ -193,7 +195,6 @@ class Cli(unittest.TestCase):
                     "file": "rust_binds/luau/a.rs",
                     "line": 2,
                     "fn": "f",
-                    "mode": "pub",
                     "params": [{"name": "a", "ty": "i32"}, {"name": "s", "ty": "String"}],
                     "ret": "bool",
                     "vis": True,
@@ -201,7 +202,7 @@ class Cli(unittest.TestCase):
                     "raw": False,
                     "serde": False,
                 },
-                {"file": "rust_binds/luau/b.rs", "line": 2, "fn": "h", "mode": "macro", "params": [], "ret": "", "vis": False, "cfgs": [], "raw": False, "serde": False},
+                {"file": "rust_binds/luau/b.rs", "line": 2, "fn": "h", "params": [], "ret": "", "vis": False, "cfgs": [], "raw": False, "serde": False},
             ],
         )
 

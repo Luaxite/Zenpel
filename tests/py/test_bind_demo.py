@@ -15,14 +15,17 @@ def tool(name, *args):
 
 
 class Demo(unittest.TestCase):
-    def test_header_is_line_one(self):
-        self.assertEqual(DEMO.read_text().splitlines()[0], "//BIND pub")
+    def test_every_fn_is_marked_and_the_attribute_is_imported(self):
+        src = DEMO.read_text()
+        self.assertFalse(src.startswith("//BIND"))  # no header: the marker selects
+        self.assertIn("use zenpel_bind::bind;", src)
+        self.assertEqual(len(re.findall(r"(?m)^#\[bind\]\npub fn ", src)), len(FNS))
 
-    def test_scanner_finds_all_fns_in_pub_mode(self):
+    def test_scanner_finds_the_marked_fns(self):
         r = tool("bind_scan.py")
         self.assertEqual(r.returncode, 0, r.stderr)
         got = [l.split()[1:] for l in r.stdout.splitlines() if "demo_binds.rs" in l]
-        self.assertEqual(got, [[f, "pub"] for f in FNS])
+        self.assertEqual(got, [[f] for f in FNS])
 
     def test_generator_binds_each_without_warnings(self):
         r = tool("bind_gen.py")

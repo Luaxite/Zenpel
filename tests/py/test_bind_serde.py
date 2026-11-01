@@ -67,13 +67,8 @@ class Attrs(unittest.TestCase):
 class Scan(unittest.TestCase):
     def test_json_key_serde_and_raw(self):
         src = "#[bind(serde)]\nfn a(c: Config) {}\n#[bind]\nfn b() {}\n#[bind(raw, serde)]\nfn c() {}\n"
-        got = {r[2]: (r[6]["serde"], r[6]["raw"]) for r in bind_scan.scan_text(src, "rust/t.rs")}
+        got = {r[2]: (r[5]["serde"], r[5]["raw"]) for r in bind_scan.scan_text(src, "rust/t.rs")}
         self.assertEqual(got, {"a": (True, False), "b": (False, False), "c": (True, True)})
-
-    def test_serde_attribute_in_a_file_mode_is_read_too(self):
-        src = "//BIND *pub\n#[bind(serde)]\npub fn a(c: Config) {}\npub fn b() {}\n"
-        got = {r[2]: r[6]["serde"] for r in bind_scan.scan_text(src, "rust/t.rs")}
-        self.assertEqual(got, {"a": True, "b": False})
 
 
 class Helpers(unittest.TestCase):

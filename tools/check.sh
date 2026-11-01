@@ -74,6 +74,10 @@ for f in rust_binds/luau/extra_*.rs; do
     cmp -s "$f" "harness/src/luau/$(basename "$f")" || bad "harness/src/luau/$(basename "$f") differs from $f"
 done
 
+for f in Cargo.toml src/lib.rs; do   # the harness's `#[bind]` crate (demo_binds.rs uses it) is a copy of the real one
+    cmp -s "rust_binds/bind/$f" "harness/shim/zenpel_bind/$f" || bad "harness/shim/zenpel_bind/$f differs from rust_binds/bind/$f"
+done
+
 [ -f rust_binds/luau/generated.rs ] && [ -f harness/src/luau/generated.rs ] || bad "rust_binds/luau/generated.rs and harness/src/luau/generated.rs must both exist"
 for m in $(sed -n 's/^mod \(real_[a-z0-9_]*\);.*/\1/p' rust_binds/luau/mod.rs); do
     [ -e "rust_binds/luau/$m.rs" ] || bad "rust_binds/luau/mod.rs declares $m but rust_binds/luau/$m.rs is missing"

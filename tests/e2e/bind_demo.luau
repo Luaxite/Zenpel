@@ -1,4 +1,4 @@
--- The globals bound from rust_binds/luau/demo_binds.rs (`//BIND pub`). Needs no bot.
+-- The globals bound from rust_binds/luau/demo_binds.rs (`#[bind]`). Needs no bot.
 local function expect(cond: any, msg: string)
 	if not cond then
 		error("E2E FAIL: " .. msg, 2)

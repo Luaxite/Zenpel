@@ -34,8 +34,15 @@ class Wiring(unittest.TestCase):
     def test_main_imports_the_attribute(self):
         self.assertIn("use zenpel_bind::bind;", _common.read("rust/main.rs"))
 
-    def test_harness_is_untouched(self):
-        self.assertNotIn("zenpel_bind", _common.read("harness/Cargo.toml"))
+    def test_harness_has_a_copy_for_the_shared_glue(self):
+        # rust_binds/luau/demo_binds.rs is copied into the harness and marks its fns `#[bind]`
+        manifest = tomllib.loads(_common.read("harness/Cargo.toml"))
+        self.assertEqual(manifest["dependencies"]["zenpel_bind"], {"path": "shim/zenpel_bind"})
+        for f in ("Cargo.toml", "src/lib.rs"):
+            self.assertEqual(_common.read(f"harness/shim/zenpel_bind/{f}"), _common.read(f"rust_binds/bind/{f}"))
+        lock = _common.read("harness/Cargo.lock")
+        self.assertIn('[[package]]\nname = "zenpel_bind"\nversion = "0.1.0"\n', lock)
+        self.assertRegex(lock, r'name = "harness"\nversion = "0.0.0"\ndependencies = \[[^\]]*"zenpel_bind"')
 
     def test_scanner_does_not_select_the_crate_itself(self):
         self.assertEqual([r for r in bind_scan.scan_root(ROOT) if r[0].startswith("rust_binds/bind/")], [])
