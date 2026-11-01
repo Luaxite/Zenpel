@@ -1,0 +1,36 @@
+diff --git a/tools/mapper_selftest.py b/tools/mapper_selftest.py
+index 394d866..5239895 100644
+--- a/tools/mapper_selftest.py
++++ b/tools/mapper_selftest.py
+@@ -54,6 +54,16 @@ def main():
+     i, _, frm = ok(P("HashMap", P("String"), ("prim", "f64")), "param")
+     assert frm.endswith("collect::<std::collections::HashMap<_, _>>()"), frm
+     n += 2
++    for ty in ("i128", "u128"):
++        for role in ("param", "ret"):
++            i, to, frm = ok(("prim", ty), role)
++            assert i.rust == ty and i.luau == "number" and to == "x" and frm == "x", (ty, role, i, to, frm)
++    i, _, frm = ok(P("Vec", ("prim", "u128")), "param")
++    assert i.rust == "Vec<u128>" and i.luau == "{ number }", i
++    i, _, _ = ok(P("Option", ("prim", "i128")), "ret")
++    assert i.rust == "Option<i128>" and i.luau == "number?", i
++    skips(("prim", "f128"), "ret", "primitive `f128`")
++    n += 7
+     i, to, frm = ok(("prim", "bool"), "param")
+     assert i.rust == "LBool" and i.luau == "boolean" and to is None and frm == "x.0", (i, to, frm)
+     i, to, frm = ok(("prim", "bool"), "ret")
+diff --git a/tools/zenpel_gen.py b/tools/zenpel_gen.py
+index de950df..ce3bbe1 100644
+--- a/tools/zenpel_gen.py
++++ b/tools/zenpel_gen.py
+@@ -207,7 +207,9 @@ try:
+ except ConfigError as e:
+     sys.exit(f"error: {CONFIG_PATH.name}: {e}")
+ 
+-INT_TYPES = {"i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64", "usize"}
++# Every integer reaches Luau as a plain `number` (a double). `i128` / `u128` too: mlua implements IntoLua / FromLua for both (`lua_convert_int!`),
++# so no conversion is written. Like `i64` / `u64` they are exact only up to 2^53 (lossy above); a value beyond the i64 range does not fit a Luau integer at all.
++INT_TYPES = {"i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize"}
+ FLOAT_TYPES = {"f32", "f64"}
+ MAP_TYPES = ("HashMap", "BTreeMap", "IndexMap")
+ RUST_KEYWORDS = {

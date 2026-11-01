@@ -1,0 +1,610 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 11f1bfc..d837578 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -18,7 +18,9 @@ path = "rust/main.rs"
+ # Point at the same checkout build.rs binds (bindings come from what sits in bind/: bind/azalea-src/ holding azalea/), so bindings and library can't drift apart.
+ # A dependency here is only linked; it gets Luau bindings only when it lives in bind/.
+ azalea = { path = "bind/azalea-src/azalea" }  # Event::Packet needs azalea's `packet-event` feature (a default one; feature `packets` below names it)
+-mlua = { version = "0.12", features = ["luau", "async", "send", "macros"] }
++mlua = { version = "0.12", features = ["luau", "async", "send", "macros", "serialize"] }
++# `#[bind(serde)]` (tools/bind_serde.py): the generated glue calls mlua::LuaSerdeExt (needs mlua's `serialize`); your own types derive Serialize / Deserialize from this `serde`.
++serde = { version = "1", features = ["derive"] }
+ # mlua-sys 0.13 hardcodes LBC_VERSION_MAX = 11 but accepts any luau0-src ^0.22.0; 0.22.1 (Luau 744) compiles to bytecode v13, so mlua rejects its own
+ # compiled chunks ("attempt to load a text chunk (mode is 'b')") and Lua::new() panics. Luau 740 (0.22.0) emits v9. Unused here: it only constrains
+ # resolution (there is no root Cargo.lock). Drop it once mlua-sys raises LBC_VERSION_MAX.
+diff --git a/README.md b/README.md
+index c09cf56..49dbf2a 100644
+--- a/README.md
++++ b/README.md
+@@ -115,6 +115,35 @@ and a `Runtime` has `lua()`.
+ 
+ main (not required) runs on start once. cannot be binded.
+ 
++#### Your own types (`#[bind(serde)]`)
++
++A parameter or return of your own type is copied through serde when the fn says so:
++
++```rust
++use serde::{Deserialize, Serialize};
++use zenpel_bind::bind;
++
++#[derive(Serialize, Deserialize)]
++struct Config { name: String, size: u32 }
++
++#[bind(serde)]
++fn area(c: Config) -> u32 { c.size * c.size }
++
++#[bind(serde)]
++fn defaults() -> Config { Config { name: "x".into(), size: 4 } }
++```
++
++```lua
++print(area({ name = "a", size = 3 }))  -- 9
++print(defaults().name)                 -- x
++```
++
++The type needs `Serialize` (return) / `Deserialize` (parameter); it is a copy in and out, with no methods and no shared state.
++It can sit in `Option<T>` (nil is `None`), `Vec<T>` (a Luau sequence), nested (`Vec<Option<T>>`), or be the `T` of a `Result<T, E>` (Err raises a Luau error with E's text).
++`None` and `()` come back as nil; a `None` inside a returned `Vec` leaves a hole in the Luau array. A bad shape (missing field, wrong type) raises a Luau error naming the field.
++Not supported (the fn is left out, stderr `unsupported`): references (`&Config`), tuples, generics, `Option<Option<T>>`.
++This replaces hand config such as `[records]` / `[from_table]` for such types. `raw` and `serde` on one attribute is a `conflict` on stderr and the fn is left out.
++
+ ## Binding other crates
+ 
+ Crates get Luau bindings by sitting in `bind/`, nothing else: `bind/<name>/` with its own `Cargo.toml`, or a workspace checkout `bind/<name>-src/` that holds the crate `<name>/` (azalea is `bind/azalea-src/azalea`). Path crates those depend on are bound too.
+diff --git a/tests/py/test_bind_build_rs.py b/tests/py/test_bind_build_rs.py
+index 3d4326d..6046046 100644
+--- a/tests/py/test_bind_build_rs.py
++++ b/tests/py/test_bind_build_rs.py
+@@ -63,7 +63,7 @@ class Run(unittest.TestCase):
+         (root / "rust").mkdir()
+         (root / "src" / "main.luau").write_text("print('hi')\n")
+         (root / "tools" / "bindgen.py").write_text("print('cargo:rerun-if-changed=stub')\n")
+-        for f in ("bind_scan.py", "bind_gen.py"):
++        for f in ("bind_scan.py", "bind_gen.py", "bind_attrs.py", "bind_serde.py"):
+             shutil.copy(ROOT / "tools" / f, root / "tools" / f)
+         if gen_py is not None:
+             (root / "tools" / "bind_gen.py").write_text(gen_py)
+diff --git a/tests/py/test_bind_scan.py b/tests/py/test_bind_scan.py
+index 39cee2d..d914a48 100644
+--- a/tests/py/test_bind_scan.py
++++ b/tests/py/test_bind_scan.py
+@@ -198,8 +198,10 @@ class Cli(unittest.TestCase):
+                     "ret": "bool",
+                     "vis": True,
+                     "cfgs": [],
++                    "raw": False,
++                    "serde": False,
+                 },
+-                {"file": "rust_binds/luau/b.rs", "line": 2, "fn": "h", "mode": "macro", "params": [], "ret": "", "vis": False, "cfgs": []},
++                {"file": "rust_binds/luau/b.rs", "line": 2, "fn": "h", "mode": "macro", "params": [], "ret": "", "vis": False, "cfgs": [], "raw": False, "serde": False},
+             ],
+         )
+ 
+diff --git a/tests/py/test_bind_serde.py b/tests/py/test_bind_serde.py
+new file mode 100644
+index 0000000..3602cca
+--- /dev/null
++++ b/tests/py/test_bind_serde.py
+@@ -0,0 +1,255 @@
++"""`#[bind(serde)]` (S41-S43): your own serde types as parameters and returns of a bound fn (tools/bind_serde.py, bind_attrs.py, hooks in bind_scan.py and bind_gen.py).
++S40 is the manifest check at the end: mlua's `serialize` feature and a `serde` dependency with `derive`."""
++import contextlib
++import io
++import re
++import tempfile
++import tomllib
++import unittest
++from pathlib import Path
++
++import _common
++import bind_attrs
++import bind_gen
++import bind_scan
++import bind_serde
++
++HEAD = "// @generated by tools/bind_gen.py: do not edit.\npub fn register(lua: &mlua::Lua) -> mlua::Result<()> {\n    let globals = lua.globals();\n"
++OPTS = "mlua::serde::SerializeOptions::new().serialize_none_to_null(false).serialize_unit_to_null(false)"
++FROM = "let a0 = mlua::LuaSerdeExt::from_value(lua, a0)?; "
++
++
++def gen(src):
++    """(text, stderr) for a one-file tree rust/main.rs."""
++    with tempfile.TemporaryDirectory() as d:
++        Path(d, "rust").mkdir()
++        Path(d, "rust", "main.rs").write_text(src)
++        err = io.StringIO()
++        with contextlib.redirect_stderr(err):
++            text = bind_gen.generate(d)
++    return text, err.getvalue()
++
++
++def only(src):
++    """The one `globals.set` line a single `#[bind(serde)]` fn produces (no stderr allowed)."""
++    text, err = gen(src)
++    assert err == "", err
++    assert text.startswith(HEAD) and text.endswith("    Ok(())\n}\n"), text
++    return text[len(HEAD) : -len("    Ok(())\n}\n")]
++
++
++RET = f"mlua::LuaSerdeExt::to_value_with(lua, &r, {OPTS})"
++
++
++class Attrs(unittest.TestCase):
++    def test_serde_key(self):
++        for body, want in (
++            ("bind", {"raw": False, "serde": False}),
++            ("bind(serde)", {"raw": False, "serde": True}),
++            ("zenpel_bind::bind(serde)", {"raw": False, "serde": True}),
++            ('bind("a.b", serde)', {"raw": False, "serde": True}),
++            ("bind(serde,)", {"raw": False, "serde": True}),
++            ("bind(raw)", {"raw": True, "serde": False}),
++            ("bind(raw, serde)", {"raw": True, "serde": True}),
++            ('bind("serde")', {"raw": False, "serde": False}),  # a string is not the key
++            ('bind("a,serde")', {"raw": False, "serde": False}),  # nor is a comma inside a string
++            ("bind(serdes)", {"raw": False, "serde": False}),
++        ):
++            with self.subTest(body):
++                self.assertEqual(bind_attrs.parse([body]), want)
++
++    def test_first_bind_that_names_an_option_wins_and_others_are_ignored(self):
++        self.assertEqual(bind_attrs.parse(["inline", "bind", "bind(serde)"]), {"raw": False, "serde": True})
++        self.assertEqual(bind_attrs.parse(["derive(Debug)"]), {"raw": False, "serde": False})
++        self.assertEqual(bind_attrs.parse([]), {"raw": False, "serde": False})
++
++
++class Scan(unittest.TestCase):
++    def test_json_key_serde_and_raw(self):
++        src = "#[bind(serde)]\nfn a(c: Config) {}\n#[bind]\nfn b() {}\n#[bind(raw, serde)]\nfn c() {}\n"
++        got = {r[2]: (r[6]["serde"], r[6]["raw"]) for r in bind_scan.scan_text(src, "rust/t.rs")}
++        self.assertEqual(got, {"a": (True, False), "b": (False, False), "c": (True, True)})
++
++    def test_serde_attribute_in_a_file_mode_is_read_too(self):
++        src = "//BIND *pub\n#[bind(serde)]\npub fn a(c: Config) {}\npub fn b() {}\n"
++        got = {r[2]: r[6]["serde"] for r in bind_scan.scan_text(src, "rust/t.rs")}
++        self.assertEqual(got, {"a": True, "b": False})
++
++
++class Helpers(unittest.TestCase):
++    known = staticmethod(lambda t: t in bind_gen.PRIMS)
++
++    def test_path_type(self):
++        for ty in ("Config", "crate::Config", "a::b::Config", "::a::Config"):
++            self.assertTrue(bind_serde.path_type(ty), ty)
++        for ty in ("&Config", "Self", "()", "(A, B)", "Vec<A>", "", "[u8; 3]", "dyn A"):
++            self.assertFalse(bind_serde.path_type(ty), ty)
++
++    def test_unknown(self):
++        k = self.known
++        for ty in ("Config", "crate::Config", "Option<Config>", "Vec<Config>", "Vec<Option<Config>>", "Option<Vec<Config>>"):
++            self.assertTrue(bind_serde.unknown(ty, k), ty)
++        for ty in ("i32", "String", "Option<i32>", "Vec<String>", "&Config", "Option<Option<Config>>", "(Config, Config)", "Result<Config, E>", "()", ""):
++            self.assertFalse(bind_serde.unknown(ty, k), ty)
++
++    def test_ret_inner(self):
++        for ty, want in (("Result<Config, String>", "Config"), ("anyhow::Result<Config>", "Config"), ("mlua::Result<Vec<A>>", "Vec<A>"), ("Config", "Config"), ("Result<Vec<(A, B)>, E>", "Vec<(A, B)>")):
++            self.assertEqual(bind_serde.ret_inner(ty), want)
++
++
++class Text(unittest.TestCase):
++    """S41: exact text for a bare path type."""
++
++    def test_argument(self):
++        self.assertEqual(only("#[bind(serde)]\nfn area(c: Config) -> f64 { 0.0 }\n"), f'    globals.set("area", lua.create_function(|lua, a0: mlua::Value| {{ {FROM}Ok(crate::area(a0)) }})?)?;\n')
++
++    def test_return(self):
++        want = f'    globals.set("make", lua.create_function(|lua, a0: i32| {{ let r = crate::make(a0); {RET} }})?)?;\n'
++        self.assertEqual(only("#[bind(serde)]\nfn make(n: i32) -> Config { todo!() }\n"), want)
++
++    def test_qualified_paths_and_a_plain_arg_next_to_a_serde_one(self):
++        want = f'    globals.set("f", lua.create_function(|lua, (a0, a1): (mlua::Value, i32)| {{ {FROM}let r = crate::f(a0, a1); {RET} }})?)?;\n'
++        self.assertEqual(only("#[bind(serde)]\nfn f(c: crate::a::Config, k: i32) -> b::Reply { todo!() }\n"), want)
++
++    def test_two_serde_args(self):
++        got = only("#[bind(serde)]\nfn f(a: A, b: B) {}\n")
++        self.assertIn("(a0, a1): (mlua::Value, mlua::Value)", got)
++        self.assertIn("let a0 = mlua::LuaSerdeExt::from_value(lua, a0)?; let a1 = mlua::LuaSerdeExt::from_value(lua, a1)?; Ok(crate::f(a0, a1))", got)
++
++    def test_the_type_is_never_spelled(self):
++        # it resolves where the user wrote it, not in crate::luau: `from_value` takes T from the callee's parameter
++        got = only("#[bind(serde)]\nfn f(c: Config, d: Vec<Option<Other>>) -> Reply { todo!() }\n")
++        for name in ("Config", "Other", "Reply"):
++            self.assertNotIn(name, got)
++        self.assertNotIn("from_value::<", got)
++
++    def test_none_and_unit_become_nil(self):
++        self.assertIn("serialize_none_to_null(false)", bind_serde.OPTIONS)
++        self.assertIn("serialize_unit_to_null(false)", bind_serde.OPTIONS)
++
++    def test_a_known_type_in_a_serde_fn_is_plain(self):
++        want = '    globals.set("p", lua.create_function(|_, (a0, a1): (i32, Option<String>)| Ok(crate::p(a0, a1)))?)?;\n'
++        self.assertEqual(only("#[bind(serde)]\nfn p(a: i32, b: Option<String>) -> bool { true }\n"), want)
++
++    def test_lua_first_param_is_still_injected(self):
++        got = only("#[bind(serde)]\nfn f(lua: &mlua::Lua, c: Config) {}\n")
++        self.assertIn(f"|lua, a0: mlua::Value| {{ {FROM}Ok(crate::f(lua, a0)) }}", got)
++
++    def test_cfg_block(self):
++        text, _ = gen('#[cfg(feature = "x")]\n#[bind(serde)]\nfn f(c: Config) {}\n')
++        self.assertIn('    #[cfg(feature = "x")]\n    {\n        globals.set("f", lua.create_function(|lua, a0: mlua::Value| {', text)
++
++    def test_without_serde_the_text_is_what_it_was(self):
++        src = "#[bind]\nfn a(x: i32, y: Option<String>) -> String { todo!() }\n#[bind]\nfn b() {}\n#[bind]\nfn c(lua: &mlua::Lua, n: u8) -> anyhow::Result<bool> { Ok(true) }\n"
++        text, err = gen(src)
++        self.assertEqual(err, "")
++        self.assertNotIn("LuaSerdeExt", text)
++        self.assertIn('lua.create_function(|_, (a0, a1): (i32, Option<String>)| Ok(crate::a(a0, a1)))', text)
++        self.assertIn('lua.create_function(|_, ()| Ok(crate::b()))', text)
++        self.assertIn("|lua, a0: u8| crate::c(lua, a0).map_err(|e| mlua::Error::runtime(e.to_string()))", text)
++
++    def test_without_serde_an_own_type_is_unsupported_as_before(self):
++        text, err = gen("#[bind]\nfn f(c: Config) {}\n#[bind]\nfn g() -> Config { todo!() }\n")
++        self.assertEqual(err, "unsupported rust/main.rs:2 f Config\nunsupported rust/main.rs:4 g Config\n")
++        self.assertNotIn("globals.set", text)
++
++
++class Wrapped(unittest.TestCase):
++    """S42: Option, Vec and Result around the serde type."""
++
++    def test_option_argument_and_return(self):
++        want = f'    globals.set("f", lua.create_function(|lua, a0: mlua::Value| {{ {FROM}let r = crate::f(a0); {RET} }})?)?;\n'
++        self.assertEqual(only("#[bind(serde)]\nfn f(c: Option<Config>) -> Option<Reply> { todo!() }\n"), want)
++
++    def test_vec_nested_in_option_and_option_in_vec(self):
++        got = only("#[bind(serde)]\nfn f(a: Vec<Config>, b: Option<Vec<Config>>) -> Vec<Option<Reply>> { todo!() }\n")
++        self.assertIn("(a0, a1): (mlua::Value, mlua::Value)", got)
++        self.assertIn("let r = crate::f(a0, a1);", got)
++
++    def test_result_err_raises_ok_goes_through_serde(self):
++        err = ".map_err(|e| mlua::Error::runtime(e.to_string()))"
++        for ret_ty in ("Result<Reply, String>", "anyhow::Result<Reply>", "mlua::Result<Reply>", "std::result::Result<Reply, std::io::Error>"):
++            with self.subTest(ret_ty):
++                want = f'    globals.set("f", lua.create_function(|lua, a0: i32| {{ let r = crate::f(a0){err}?; {RET} }})?)?;\n'
++                self.assertEqual(only(f"#[bind(serde)]\nfn f(n: i32) -> {ret_ty} {{ todo!() }}\n"), want)
++
++    def test_result_of_option_and_vec(self):
++        got = only("#[bind(serde)]\nfn f(c: Config) -> Result<Option<Vec<Reply>>, String> { todo!() }\n")
++        self.assertIn("let r = crate::f(a0).map_err(|e| mlua::Error::runtime(e.to_string()))?;", got)
++
++    def test_result_of_a_plain_type_is_not_a_serde_return(self):
++        got = only("#[bind(serde)]\nfn f(c: Config) -> Result<String, String> { todo!() }\n")
++        self.assertNotIn("to_value", got)
++        self.assertTrue(got.rstrip().endswith("crate::f(a0).map_err(|e| mlua::Error::runtime(e.to_string())) })?)?;"), got)
++
++    def test_unit_result_with_a_serde_arg(self):
++        got = only("#[bind(serde)]\nfn f(c: Config) -> anyhow::Result<()> { todo!() }\n")
++        self.assertIn(f"{{ {FROM}crate::f(a0).map_err(|e| mlua::Error::runtime(e.to_string())) }}", got)
++
++    def test_what_stays_unsupported_with_serde(self):
++        src = "".join(f"#[bind(serde)]\nfn f{i}(c: {ty}) {{}}\n" for i, ty in enumerate(("&Config", "(Config, Config)", "Option<Option<Config>>", "Wrapper<Config>", "Vec<i32>", "Option<&str>")))
++        src += "#[bind(serde)]\nfn r() -> &Config { todo!() }\n#[bind(serde)]\nfn t() -> (Config, i32) { todo!() }\n#[bind(serde)]\nfn o() -> Option<Option<Config>> { todo!() }\n"
++        text, err = gen(src)
++        self.assertNotIn("globals.set", text)
++        for n, ty in ((2, "&Config"), (4, "(Config, Config)"), (6, "Option<Option<Config>>"), (8, "Wrapper<Config>"), (10, "Vec<i32>"), (12, "Option<&str>")):
++            self.assertIn(f"unsupported rust/main.rs:{n} f{(n - 2) // 2} {ty}\n", err)
++        for n, name, ty in ((14, "r", "&Config"), (16, "t", "(Config, i32)"), (18, "o", "Option<Option<Config>>")):
++            self.assertIn(f"unsupported rust/main.rs:{n} {name} {ty}\n", err)
++
++
++class Conflict(unittest.TestCase):
++    """S43: `raw` and `serde` on one attribute."""
++
++    SRC = "#[bind(raw, serde)]\nfn f(c: Config) {}\n"
++
++    def test_the_fn_is_left_out_with_a_note(self):
++        text, err = gen(self.SRC)
++        self.assertEqual(err, "conflict rust/main.rs:2 f raw+serde\n")
++        self.assertNotIn("globals.set", text)
++
++    def test_the_name_is_not_claimed(self):
++        text, err = gen(self.SRC + "#[bind(serde)]\nfn f(c: Config) {}\n")
++        self.assertEqual(err, "conflict rust/main.rs:2 f raw+serde\n")
++        self.assertEqual(text.count("globals.set"), 1)
++        self.assertIn("LuaSerdeExt", text)
++
++    def test_the_other_fns_are_still_bound(self):
++        text, err = gen(self.SRC + "#[bind]\nfn g(a: i32) {}\n")
++        self.assertEqual(err, "conflict rust/main.rs:2 f raw+serde\n")
++        self.assertIn("crate::g(a0)", text)
++
++    def test_either_alone_is_no_conflict(self):
++        text, err = gen("#[bind(raw)]\nfn a(x: i32) {}\n#[bind(serde)]\nfn b(c: Config) {}\n")
++        self.assertEqual(err, "")
++        self.assertEqual(text.count("globals.set"), 2)
++
++    def test_the_cli_prints_it(self):
++        with tempfile.TemporaryDirectory() as d:
++            Path(d, "rust").mkdir()
++            Path(d, "rust", "main.rs").write_text(self.SRC)
++            p = _common.run(["python3", _common.TOOLS / "bind_gen.py", "--root", d])
++        self.assertEqual(p.returncode, 0)
++        self.assertEqual(p.stderr, "conflict rust/main.rs:2 f raw+serde\n")
++
++
++class Manifest(unittest.TestCase):
++    """S40: what the generated code needs from Cargo.toml."""
++
++    def setUp(self):
++        self.deps = tomllib.loads(_common.read("Cargo.toml"))["dependencies"]
++
++    def test_mlua_has_serialize_and_keeps_the_rest(self):
++        self.assertEqual(set(self.deps["mlua"]["features"]), {"luau", "async", "send", "macros", "serialize"})
++        self.assertEqual(self.deps["mlua"]["version"], "0.12")
++
++    def test_serde_with_derive(self):
++        self.assertEqual(self.deps["serde"]["version"], "1")
++        self.assertIn("derive", self.deps["serde"]["features"])
++
++    def test_the_generated_glue_names_only_what_the_feature_provides(self):
++        text = only("#[bind(serde)]\nfn f(c: Config) -> Config { todo!() }\n")
++        self.assertEqual(sorted(set(re.findall(r"mlua::[A-Za-z_:]+", text))), ["mlua::LuaSerdeExt::from_value", "mlua::LuaSerdeExt::to_value_with", "mlua::Value", "mlua::serde::SerializeOptions::new"])
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tools/bind_attrs.py b/tools/bind_attrs.py
+new file mode 100644
+index 0000000..5e8769f
+--- /dev/null
++++ b/tools/bind_attrs.py
+@@ -0,0 +1,43 @@
++#!/usr/bin/env python3
++"""The options of a `#[bind(..)]` attribute that tools/bind_scan.py reads (S41: `serde`; S43: `raw`, read only so that `raw` + `serde` can be reported as a conflict).
++`#[bind]`, `#[bind(serde)]`, `#[bind(raw, serde)]` (also as `zenpel_bind::bind`): the comma-separated items are looked at one by one, in any order. Any other item (a string, `ret = ".."`, ..) is ignored, and the fn is still selected as before (this tree has no Luau names: a fn is a global of its own name).
++`raw` is not a bind mode in this tree: alone it changes nothing; with `serde` on the same attribute the fn is a `conflict` (tools/bind_gen.py).
++Pure text helper: tools/bind_scan.py (`scan_text`) calls `parse`.
++"""
++import re
++
++CALL = re.compile(r"(?:\w+\s*::\s*)*bind\s*\((.*)\)", re.S)
++EMPTY = {"raw": False, "serde": False}
++
++
++def items(inner):
++    """The comma-separated items of the text inside `bind(..)` (commas inside a string do not split), stripped; one trailing comma is fine."""
++    out, cur, quoted = [], "", False
++    for ch in inner:
++        quoted ^= ch == '"'
++        if ch == "," and not quoted:
++            out.append(cur.strip())
++            cur = ""
++        else:
++            cur += ch
++    out.append(cur.strip())
++    return out[:-1] if out[-1] == "" else out
++
++
++def one(attr):
++    """{"raw": bool, "serde": bool} for one attribute body, or None when it is not a `bind(..)` naming `raw` or `serde`."""
++    m = CALL.fullmatch(attr)
++    if not m:
++        return None
++    its = items(m.group(1))
++    opts = {k: k in its for k in EMPTY}
++    return opts if opts != EMPTY else None
++
++
++def parse(attrs):
++    """{"raw": bool, "serde": bool} from the bodies of the `#[..]` attributes above a fn (the first `bind(..)` that names `raw` or `serde` wins; all False when none does)."""
++    for a in attrs:
++        got = one(a)
++        if got:
++            return got
++    return dict(EMPTY)
+diff --git a/tools/bind_gen.py b/tools/bind_gen.py
+index 6700189..09399b1 100644
+--- a/tools/bind_gen.py
++++ b/tools/bind_gen.py
+@@ -5,6 +5,9 @@ Output: `pub fn register(lua: &mlua::Lua) -> mlua::Result<()>`; every bound fn b
+ Argument types: i8..i64, u8..u64, isize, usize, f32, f64, bool, String, or Option<one of those> (nil is None).
+ A first parameter `&Lua` / `&mlua::Lua` is passed the state and is not a Luau argument.
+ Return: nothing, `()`, or one of those; or `Result<T, E>` / `anyhow::Result<T>` / `mlua::Result<T>` with T like that (Err raises a Luau error with E's text).
++`#[bind(serde)]` (tools/bind_serde.py): a parameter or the whole return of a plain path type that no form above knows (`Config`, `crate::Config`; no generics, no reference)
++is converted with `mlua::LuaSerdeExt::from_value(lua, v)?` (T inferred from the fn's parameter, so the type is never spelled in the generated code) / `to_value_with(lua, &r, ..)` (`None` and `()` become nil, not mlua's `null`; the closure takes an `mlua::Value`); you guarantee `Deserialize` / `Serialize`. Also inside `Option<..>` / `Vec<..>`
++(nested too) and as the `T` of a `Result<T, E>` (the whole type goes to serde; no `Option<Option<_>>`, no reference or tuple). `raw` and `serde` on one attribute is `conflict path:line fn raw+serde` on stderr and the fn is left out.
+ A fn with another type is left out (stderr `unsupported path:line fn type`); a repeated name keeps the first (stderr `dup name`).
+ The fn is called as `crate::<module path of its file>::name`: rust/main.rs is the crate root, rust/a/mod.rs and rust/a.rs are `a`; the glue in rust_binds/luau/ is `crate::luau` (main.rs declares it with #[path]).
+ The generated code lives in `crate::luau`, so a private fn is only callable from rust/main.rs and rust_binds/luau/mod.rs; a private fn of another file is
+@@ -17,6 +20,7 @@ from pathlib import Path
+ 
+ sys.path.insert(0, str(Path(__file__).resolve().parent))
+ import bind_scan  # noqa: E402
++import bind_serde  # noqa: E402
+ 
+ PRIMS = {"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize", "f32", "f64", "bool", "String"}
+ HEAD = "// @generated by tools/bind_gen.py: do not edit.\n"
+@@ -40,17 +44,22 @@ def arg_ok(ty):
+     return (m.group(1) if m else ty) in PRIMS
+ 
+ 
+-def split_sig(params, ret):
+-    """(inject, args, is_result, bad): `args` are the Luau-visible params; `bad` is the first type that cannot cross to Luau, else None."""
++def ret_ok(ty):
++    return ty in PRIMS | {"", "()"}
++
++
++def split_sig(params, ret, serde=False):
++    """(inject, args, is_result, bad): `args` are the Luau-visible params; `bad` is the first type that cannot cross to Luau, else None.
++    `serde`: a plain path type of an unknown name is copied through mlua's serde support (tools/bind_serde.py), as an argument or as the return (also inside Option / Vec, and as the `T` of a Result)."""
+     inject = bool(params) and params[0]["ty"] in LUA_REF
+     args = params[inject:]
+     for p in args:
+-        if not arg_ok(p["ty"]):
++        if not (arg_ok(p["ty"]) or serde and bind_serde.unknown(p["ty"], arg_ok)):
+             return inject, args, False, p["ty"]
+     m = RESULT.fullmatch(ret)
+     parts = bind_scan.split_top(m.group(1)) if m else []
+     ok = parts[0] if parts else ret
+-    return inject, args, bool(m), None if ok in PRIMS | {"", "()"} else ret
++    return inject, args, bool(m), None if ret_ok(ok) or serde and bind_serde.unknown(ok, ret_ok) else ret
+ 
+ 
+ def visible(path, vis):
+@@ -75,18 +84,26 @@ def mod_cfgs(root, label):
+     return out
+ 
+ 
+-def statement(fn, path, args, inject=False, is_result=False, cfgs=()):
+-    """One `globals.set(..)` line for a fn with supported types."""
++def statement(fn, path, args, inject=False, is_result=False, cfgs=(), serde=False, ret=""):
++    """One `globals.set(..)` line for a fn with supported types (`serde` + `ret`: unknown path types, also in Option / Vec and as the `T` of a Result, go through `from_value` / `to_value`, see tools/bind_serde.py)."""
+     names = [f"a{i}" for i in range(len(args))]
++    spell = (lambda ty: bind_serde.arg_type(ty, arg_ok) or ty) if serde else (lambda ty: ty)  # a serde argument arrives as an mlua::Value
+     if not args:
+         pat = "()"
+     elif len(args) == 1:
+-        pat = f"{names[0]}: {args[0]['ty']}"
++        pat = f"{names[0]}: {spell(args[0]['ty'])}"
+     else:
+-        pat = f"({', '.join(names)}): ({', '.join(p['ty'] for p in args)})"
++        pat = f"({', '.join(names)}): ({', '.join(spell(p['ty']) for p in args)})"
+     call = f"{path}::{fn}({', '.join((['lua'] if inject else []) + names)})"
+-    result = f"{call}.map_err(|e| mlua::Error::runtime(e.to_string()))" if is_result else f"Ok({call})"
+-    line = f'globals.set("{fn}", lua.create_function(|{"lua" if inject else "_"}, {pat}| {result})?)?;'
++    fail = ".map_err(|e| mlua::Error::runtime(e.to_string()))" if is_result else ""
++    result = f"{call}{fail}" if is_result else f"Ok({call})"
++    pre = bind_serde.arg_lines(args, names, arg_ok) if serde else ""
++    if serde and bind_serde.ret_serde(ret, ret_ok):  # the value of a Result is taken out with `?` before `to_value`
++        more, result = bind_serde.ret_lines(call, f"{fail}?" if is_result else "")
++        pre += more
++    named = "lua" if inject or pre else "_"
++    func = f"{{ {pre}{result} }}" if pre else result
++    line = f'globals.set("{fn}", lua.create_function(|{named}, {pat}| {func})?)?;'
+     if cfgs:  # a block: attributes on a plain statement are fine, on the `?` expression inside it they are not
+         return "".join(f"    #[{c}]\n" for c in cfgs) + f"    {{\n        {line}\n    }}\n"
+     return f"    {line}\n"
+@@ -98,7 +115,10 @@ def generate(root):
+     for label, line, fn, _mode, params, ret, extra in bind_scan.scan_root(root):
+         if label.startswith("rust_binds/bind/"):
+             continue
+-        inject, args, is_result, bad = split_sig(params, ret)
++        if extra["raw"] and extra["serde"]:  # two ways to convert the same types
++            print(f"conflict {label}:{line} {fn} raw+serde", file=sys.stderr)
++            continue
++        inject, args, is_result, bad = split_sig(params, ret, extra["serde"])
+         if not visible(module_path(label), extra["vis"]):
+             print(f"invisible {label}:{line} {fn}", file=sys.stderr)
+         elif bad is not None:
+@@ -108,7 +128,7 @@ def generate(root):
+         else:
+             seen.add(fn)
+             cfgs = mod_cfgs(root, label) + extra["cfgs"]
+-            body.append(statement(fn, module_path(label), args, inject, is_result, cfgs))
++            body.append(statement(fn, module_path(label), args, inject, is_result, cfgs, extra["serde"], ret))
+     head = "pub fn register(lua: &mlua::Lua) -> mlua::Result<()> {\n"
+     if not body:
+         return HEAD + head + "    let _ = lua;\n    Ok(())\n}\n"
+diff --git a/tools/bind_scan.py b/tools/bind_scan.py
+index a6d420b..ef10cce 100644
+--- a/tools/bind_scan.py
++++ b/tools/bind_scan.py
+@@ -4,7 +4,9 @@
+ Line 1 of a file may be `//BIND *Type` (`*` is a placeholder) with Type one of
+ pub (every plain `pub fn`), all (every fn), macro (only fns with `#[bind]`).
+ Default is macro. Output: one `path:line fn mode` line per selected fn, or with
+---json a list of {file, line, fn, mode, params: [{name, ty}], ret} (ret "" = unit).
++--json a list of {file, line, fn, mode, params: [{name, ty}], ret, vis, cfgs, raw, serde} (ret "" = unit).
++`serde` is true for `#[bind(serde)]` (tools/bind_serde.py: unknown path types are copied through mlua's serde support);
++`raw` is true when the attribute also names `raw` (only so that bind_gen.py can report `raw` + `serde` as a conflict; tools/bind_attrs.py).
+ """
+ import argparse
+ import json
+@@ -12,6 +14,9 @@ import re
+ import sys
+ from pathlib import Path
+ 
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++import bind_attrs  # noqa: E402
++
+ MODES = ("pub", "all", "macro")
+ HEADER = re.compile(r"//\s*BIND\b\s*(?:\*\s*)?(\w+)?")
+ # String/char literals: blanked like comments so braces and `fn` inside stay inert.
+@@ -246,7 +251,8 @@ def scan_text(src, label):
+             continue
+         vis = bool(m.group("pub")) and not re.fullmatch(r"pub\s*\(\s*self\s*\)", m.group("pub").strip())
+         cfgs = [a for a in attrs if re.match(r"cfg\s*\(", a)]
+-        yield label, line, name, mode, params, ret, {"vis": vis, "cfgs": cfgs}
++        opts = bind_attrs.parse(attrs)
++        yield label, line, name, mode, params, ret, {"vis": vis, "cfgs": cfgs, "raw": opts["raw"], "serde": opts["serde"]}
+ 
+ 
+ def scan_root(root):
+diff --git a/tools/bind_serde.py b/tools/bind_serde.py
+new file mode 100644
+index 0000000..4d01b3f
+--- /dev/null
++++ b/tools/bind_serde.py
+@@ -0,0 +1,72 @@
++#!/usr/bin/env python3
++"""`#[bind(serde)]`: your own serde types as bound parameters and returns (S41; S42 adds Option / Vec / Result; S43: `raw` + `serde` on one fn is a `conflict`, decided in bind_gen.generate).
++A parameter or return whose type is a plain path (`Config`, `crate::Config`, `a::b::Config`; no generics, no reference) that the other forms of tools/bind_gen.py do not know is copied through mlua's serde support: the closure takes an `mlua::Value` and the generated code calls `mlua::LuaSerdeExt::from_value(lua, v)?` before the call; a return goes through `mlua::LuaSerdeExt::to_value_with(lua, &r, OPTIONS)`.
++The type is never written in the generated code: `from_value` gets its `T` by inference from the parameter of the fn it is passed to, so a type spelled `Config` in your module needs no import in `crate::luau`.
++Such a type may also sit inside `Option<..>` and `Vec<..>` (nested too, `Vec<Option<Config>>`; not `Option<Option<..>>`), as an argument, as a return, or as the `T` of `Result<T, E>`; the WHOLE type is handed to serde (`from_value` infers `Option<Config>`), so nil is `None` and a Luau sequence is a `Vec`. A `Result`'s Err still raises a Luau error with E's text.
++The user guarantees `serde::Deserialize` / `Serialize` (needs the `serialize` feature of mlua and a `serde` dependency, both in Cargo.toml).
++Pure text helpers (no I/O): tools/bind_gen.py (`split_sig`, `statement`) calls them. `known(t)` is the generator's own check for the types it converts without serde.
++"""
++import re
++
++import bind_scan
++
++PATH = re.compile(r"(?:::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*")
++OPTION = re.compile(r"Option<(.*)>", re.S)
++VEC = re.compile(r"(?:std::vec::)?Vec<(.*)>", re.S)
++RESULT = re.compile(r"(?:anyhow::|mlua::|std::result::)?Result<(.*)>", re.S)
++LUA = "mlua::LuaSerdeExt"
++# mlua turns `None` and `()` into its `null` light userdata by default, which a script cannot compare with nil: here they become nil (a `None` inside a Vec leaves a hole in the Luau array).
++OPTIONS = "mlua::serde::SerializeOptions::new().serialize_none_to_null(false).serialize_unit_to_null(false)"
++
++
++def path_type(ty):
++    """True for a plain path type: no generics, no reference, no tuple; `Self` and `()` are not."""
++    return bool(PATH.fullmatch(ty)) and ty != "Self"
++
++
++def leaf(ty):
++    """The type inside any `Option<..>` / `Vec<..>` wrappers of `ty` (`Vec<Option<Config>>` -> `Config`); None for `Option<Option<..>>` (not a Luau shape). A type with no wrapper is its own leaf."""
++    ty, last = ty.strip(), None
++    while True:
++        m = OPTION.fullmatch(ty)
++        kind = "Option"
++        if not m:
++            m, kind = VEC.fullmatch(ty), "Vec"
++        if not m:
++            return ty
++        if kind == "Option" and last == "Option":
++            return None
++        ty, last = m.group(1).strip(), kind
++
++
++def unknown(ty, known):
++    """True when `ty` is a plain path or an Option / Vec of one that the other forms do not take, so serde converts the whole type."""
++    inner = leaf(ty)
++    return not known(ty) and inner is not None and path_type(inner) and not known(inner)
++
++
++def arg_type(ty, known):
++    """The type of the closure parameter: `mlua::Value` for a serde argument, else None (the caller spells the type as usual)."""
++    return "mlua::Value" if unknown(ty, known) else None
++
++
++def arg_lines(args, names, known):
++    """The `let aN = from_value(lua, aN)?;` statements (one line of text, each ending with a space) for the serde arguments of `args` ({name, ty}); "" when there are none."""
++    return "".join(f"let {n} = {LUA}::from_value(lua, {n})?; " for n, a in zip(names, args) if unknown(a["ty"], known))
++
++
++def ret_inner(ret):
++    """The `T` of `Result<T, E>` / `Result<T>` (the first top-level type argument), else `ret` itself."""
++    m = RESULT.fullmatch(ret)
++    parts = bind_scan.split_top(m.group(1)) if m else []
++    return parts[0].strip() if parts else ret
++
++
++def ret_serde(ret, known):
++    """True when the value returned (the `T` of a `Result<T, E>`) is a serde type: the return goes through `to_value`."""
++    return unknown(ret_inner(ret), known)
++
++
++def ret_lines(call, tail=""):
++    """(statement text before the value, the value expression) for a serde return of `call`: `let r = call<tail>; ` and `to_value_with(lua, &r, OPTIONS)`; `tail` is the `.map_err(..)?` of a Result."""
++    return f"let r = {call}{tail}; ", f"{LUA}::to_value_with(lua, &r, {OPTIONS})"
